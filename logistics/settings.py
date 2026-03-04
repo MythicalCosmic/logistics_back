@@ -40,7 +40,9 @@ INSTALLED_APPS = [
     # 'rest_framework_simplejwt',
     'base',
     'main',
-    'admins'
+    'admins',
+    'rest_framework',
+    'drf_spectacular',
 ]
 
 MIDDLEWARE = [
@@ -52,7 +54,7 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'base.middlewares.auth_middleware.AuthMiddleware',
-    'base.middlewares.force_json_middleware.JSONOnlyMiddleware'
+    # 'base.middlewares.force_json_middleware.JSONOnlyMiddleware'
 ]
 
 ROOT_URLCONF = 'logistics.urls'
@@ -154,3 +156,8 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
 # AUTH_USER_MODEL = 'base.User'
+
+
+REST_FRAMEWORK = {
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+}
