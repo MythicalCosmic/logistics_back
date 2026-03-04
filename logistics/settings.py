@@ -51,7 +51,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    # 'base.middlewares.auth_middleware.AuthMiddleware'
+    'base.middlewares.auth_middleware.AuthMiddleware',
     'base.middlewares.force_json_middleware.JSONOnlyMiddleware'
 ]
 
@@ -151,3 +151,6 @@ STATIC_URL = 'static/'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
+
+
+# AUTH_USER_MODEL = 'base.User'

@@ -3,6 +3,7 @@ from django.utils import timezone
 
 from base.models import User, Session, PasswordReset
 from base.services.base_service import ServiceResponse, CacheService
+from base.services.role_permission_service import RolePermissionService
 
 
 SESSION_TTL = 72 * 3600
@@ -224,19 +225,8 @@ class AuthService:
 
     @classmethod
     def _cache_permissions(cls, user: User) -> None:
-        perms = list(user.get_permissions())
-        CacheService.set(f"permissions:{user.pk}", perms, PERMISSIONS_CACHE_TTL)
+        RolePermissionService.cache_permissions(user)
 
     @classmethod
     def get_cached_permissions(cls, user_id: int) -> list:
-        cached = CacheService.get(f"permissions:{user_id}")
-        if cached is not None:
-            return cached
-
-        try:
-            user = User.objects.get(pk=user_id)
-            perms = list(user.get_permissions())
-            CacheService.set(f"permissions:{user_id}", perms, PERMISSIONS_CACHE_TTL)
-            return perms
-        except User.DoesNotExist:
-            return []
+        return RolePermissionService.get_cached_permissions(user_id)
