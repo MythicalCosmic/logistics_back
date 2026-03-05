@@ -1,0 +1,21 @@
+asgiref==3.11.1
+attrs==25.4.0
+Django==6.0.2
+django-redis==6.0.0
+djangorestframework==3.16.1
+drf-spectacular==0.29.0
+gunicorn==23.0.0
+inflection==0.5.1
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+PyYAML==6.0.3
+redis==7.2.1
+referencing==0.37.0
+rpds-py==0.30.0
+sqlparse==0.5.5
+uritemplate==4.2.0
+
+# Testing
+pytest==8.3.5
+pytest-django==4.10.0
+pytest-cov==6.1.1

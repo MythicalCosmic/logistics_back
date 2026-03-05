@@ -304,7 +304,7 @@ class LoadService:
         financial = Load.objects.exclude(status="cancelled").aggregate(
             total_payout=Sum("payout"),
             avg_payout=Avg("payout"),
-            total_miles=Sum("total_miles"),
+            sum_miles=Sum("total_miles"),
             avg_miles=Avg("total_miles"),
             avg_rate=Avg("rate_per_mile"),
         )
@@ -342,7 +342,7 @@ class LoadService:
             "financial": {
                 "total_payout": str(financial["total_payout"] or 0),
                 "avg_payout": str(round(financial["avg_payout"] or 0, 2)),
-                "total_miles": str(financial["total_miles"] or 0),
+                "total_miles": str(financial["sum_miles"] or 0),
                 "avg_miles": str(round(financial["avg_miles"] or 0, 1)),
                 "avg_rate_per_mile": str(round(financial["avg_rate"] or 0, 2)),
             },
