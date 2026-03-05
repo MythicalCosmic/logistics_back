@@ -1,6 +1,6 @@
 from django.urls import path
 
-from admins.views import user_views, role_views
+from admins.views import user_views, role_views, facility_views, activity_views
 
 urlpatterns = [
     path("users", user_views.list_users, name="admin_list_users"),
@@ -27,4 +27,16 @@ urlpatterns = [
     path("roles/<int:role_id>/permissions/bulk", role_views.bulk_assign_permissions, name="admin_bulk_assign_permissions"),
 
     path("permissions", role_views.list_permissions, name="admin_list_permissions"),
+
+    # Facilities
+    path("facilities", facility_views.list_facilities, name="admin_facility_list"),
+    path("facilities/stats", facility_views.facility_stats, name="admin_facility_stats"),
+    path("facilities/create", facility_views.create_facility, name="admin_facility_create"),
+    path("facilities/<int:facility_id>", facility_views.get_facility, name="admin_facility_detail"),
+    path("facilities/<int:facility_id>/update", facility_views.update_facility, name="admin_facility_update"),
+    path("facilities/<int:facility_id>/delete", facility_views.delete_facility, name="admin_facility_delete"),
+
+    # Activity Logs
+    path("activity-logs", activity_views.list_logs, name="admin_activity_list"),
+    path("activity-logs/<int:log_id>", activity_views.get_log, name="admin_activity_detail"),
 ]
