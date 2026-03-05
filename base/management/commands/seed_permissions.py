@@ -33,6 +33,10 @@ PERMISSIONS = {
         ("reports.view", "View reports"),
         ("reports.export", "Export reports"),
     ],
+    "analytics": [
+        ("analytics.view", "View analytics"),
+        ("analytics.compare", "Compare analytics periods"),
+    ],
 }
 
 ROLES = [
@@ -51,6 +55,7 @@ ROLES = [
         "permissions": [
             "users.view", "loads.view", "loads.create", "loads.update",
             "loads.assign", "facilities.view", "reports.view", "reports.export",
+            "analytics.view", "analytics.compare",
         ],
     },
     {

@@ -106,15 +106,30 @@ class CacheService:
 
     @classmethod
     def delete_pattern(cls, pattern: str) -> None:
-        """delete keys matching pattern -- requires redis backend"""
+        """delete keys matching pattern -- works with redis and locmem backends"""
         full_pattern = cls._key(pattern)
         try:
-            from django_redis import get_redis_connection
-            conn = get_redis_connection("default")
-            keys = conn.keys(full_pattern)
-            if keys:
-                conn.delete(*keys)
-        except (ImportError, Exception):
+            # django-redis provides delete_pattern which handles KEY_PREFIX correctly
+            cache.delete_pattern(full_pattern)
+        except AttributeError:
+            # LocMemCache / DummyCache fallback -- scan internal cache
+            cls._locmem_delete_pattern(full_pattern)
+
+    @classmethod
+    def _locmem_delete_pattern(cls, pattern: str) -> None:
+        """Fallback pattern delete for non-redis backends (LocMemCache)."""
+        try:
+            base = pattern.replace("*", "")
+            # LocMemCache stores keys in _cache dict with version-prefixed keys
+            internal = getattr(cache, '_cache', None)
+            if internal is None:
+                return
+            keys_to_delete = [k for k in list(internal.keys()) if base in k]
+            for k in keys_to_delete:
+                internal.pop(k, None)
+                expire_info = getattr(cache, '_expire_info', {})
+                expire_info.pop(k, None)
+        except Exception:
             pass
 
     @classmethod

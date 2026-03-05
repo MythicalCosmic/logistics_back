@@ -1,6 +1,6 @@
 from django.urls import path
 
-from admins.views import user_views, role_views, facility_views, activity_views
+from admins.views import user_views, role_views, facility_views, activity_views, analytics_views
 
 urlpatterns = [
     path("users", user_views.list_users, name="admin_list_users"),
@@ -39,4 +39,11 @@ urlpatterns = [
     # Activity Logs
     path("activity-logs", activity_views.list_logs, name="admin_activity_list"),
     path("activity-logs/<int:log_id>", activity_views.get_log, name="admin_activity_detail"),
+
+    # Analytics
+    path("analytics/overview", analytics_views.overview, name="admin_analytics_overview"),
+    path("analytics/loads/frequency", analytics_views.load_frequency, name="admin_analytics_load_frequency"),
+    path("analytics/loads/routes", analytics_views.route_frequency, name="admin_analytics_route_frequency"),
+    path("analytics/loads/trends", analytics_views.trends, name="admin_analytics_trends"),
+    path("analytics/loads/compare", analytics_views.compare_periods, name="admin_analytics_compare"),
 ]
