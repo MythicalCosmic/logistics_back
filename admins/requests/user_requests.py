@@ -151,6 +151,7 @@ def remove_role_request(request) -> tuple:
 def change_password_request(request) -> tuple:
     body = _parse_body(request)
     new_password = str(body.get("new_password", ""))
+    force = body.get("force", False) is True
 
     v = Validator()
     v.required(new_password, "New password").password_strength(new_password)
@@ -158,4 +159,4 @@ def change_password_request(request) -> tuple:
     if not v.is_valid:
         return _fail(v.errors)
 
-    return _ok({"new_password": new_password})
+    return _ok({"new_password": new_password, "force": force})

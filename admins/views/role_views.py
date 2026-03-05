@@ -2,7 +2,7 @@ from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST, require_http_methods
 
-from base.decorators.decorators import require_role
+from base.decorators.decorators import require_permission
 from admins.services.role_service import AdminRoleService
 from admins.requests.role_requests import (
     create_role_request,
@@ -20,14 +20,14 @@ def _json(result_tuple):
 
 @csrf_exempt
 @require_GET
-@require_role("admin")
+@require_permission("roles.view")
 def list_roles(request):
     return _json(AdminRoleService.list_roles())
 
 
 @csrf_exempt
 @require_POST
-@require_role("admin")
+@require_permission("roles.create")
 def create_role(request):
     data, error = create_role_request(request)
     if error:
@@ -42,14 +42,14 @@ def create_role(request):
 
 @csrf_exempt
 @require_GET
-@require_role("admin")
+@require_permission("roles.view")
 def get_role(request, role_id):
     return _json(AdminRoleService.get_role(role_id))
 
 
 @csrf_exempt
 @require_http_methods(["PUT"])
-@require_role("admin")
+@require_permission("roles.update")
 def update_role(request, role_id):
     data, error = update_role_request(request)
     if error:
@@ -60,14 +60,14 @@ def update_role(request, role_id):
 
 @csrf_exempt
 @require_http_methods(["DELETE"])
-@require_role("admin")
+@require_permission("roles.delete")
 def delete_role(request, role_id):
     return _json(AdminRoleService.delete_role(role_id))
 
 
 @csrf_exempt
 @require_POST
-@require_role("admin")
+@require_permission("roles.update")
 def assign_permission(request, role_id):
     data, error = assign_permission_request(request)
     if error:
@@ -81,7 +81,7 @@ def assign_permission(request, role_id):
 
 @csrf_exempt
 @require_http_methods(["DELETE"])
-@require_role("admin")
+@require_permission("roles.update")
 def remove_permission(request, role_id):
     data, error = remove_permission_request(request)
     if error:
@@ -95,7 +95,7 @@ def remove_permission(request, role_id):
 
 @csrf_exempt
 @require_POST
-@require_role("admin")
+@require_permission("roles.update")
 def bulk_assign_permissions(request, role_id):
     data, error = bulk_assign_permissions_request(request)
     if error:
@@ -109,13 +109,13 @@ def bulk_assign_permissions(request, role_id):
 
 @csrf_exempt
 @require_GET
-@require_role("admin")
+@require_permission("roles.view")
 def list_permissions(request):
     return _json(AdminRoleService.list_permissions())
 
 
 @csrf_exempt
 @require_GET
-@require_role("admin")
+@require_permission("roles.view")
 def role_stats(request):
     return _json(AdminRoleService.stats())

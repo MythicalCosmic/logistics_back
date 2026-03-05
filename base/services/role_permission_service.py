@@ -140,6 +140,40 @@ class RolePermissionService:
         )
 
     @classmethod
+    def assign_permission_to_role(cls, role_id: int, permission_id: int) -> tuple:
+        try:
+            role = Role.objects.get(pk=role_id)
+        except Role.DoesNotExist:
+            return ServiceResponse.not_found("Role not found")
+
+        try:
+            permission = Permission.objects.get(pk=permission_id)
+        except Permission.DoesNotExist:
+            return ServiceResponse.not_found("Permission not found")
+
+        _, created = RolePermission.objects.get_or_create(role=role, permission=permission)
+
+        if not created:
+            return ServiceResponse.error("Permission already assigned to this role")
+
+        cls._invalidate_role_users(role_id)
+
+        return ServiceResponse.success("Permission assigned successfully")
+
+    @classmethod
+    def remove_permission_from_role(cls, role_id: int, permission_id: int) -> tuple:
+        deleted, _ = RolePermission.objects.filter(
+            role_id=role_id, permission_id=permission_id
+        ).delete()
+
+        if not deleted:
+            return ServiceResponse.not_found("Permission not assigned to this role")
+
+        cls._invalidate_role_users(role_id)
+
+        return ServiceResponse.success("Permission removed successfully")
+
+    @classmethod
     def _invalidate_role_users(cls, role_id: int) -> None:
         user_ids = UserRole.objects.filter(role_id=role_id).values_list("user_id", flat=True)
         for uid in user_ids:
