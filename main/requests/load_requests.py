@@ -2,7 +2,7 @@ from django.utils.dateparse import parse_datetime
 
 from base.services.base_service import Validator, ServiceResponse
 from base.helpers.auth_helpers import _parse_body
-from base.models import Load, LoadLeg
+from base.models import Load, LoadLeg, State
 
 
 def _fail(errors: str) -> tuple:
@@ -31,6 +31,9 @@ VALID_LOAD_TYPES = [c[0] for c in Load.LoadType.choices]
 VALID_DIRECTIONS = [c[0] for c in Load.Direction.choices]
 VALID_LEG_STATUSES = [c[0] for c in LoadLeg.Status.choices]
 
+def _get_valid_states():
+    return set(State.objects.values_list("abbreviation", flat=True))
+
 
 def create_load_request(request) -> tuple:
     body = _parse_body(request)
@@ -38,6 +41,8 @@ def create_load_request(request) -> tuple:
     v = Validator()
     v.required(body.get("origin_facility", ""), "Origin facility")
     v.required(body.get("destination_facility", ""), "Destination facility")
+    v.required(body.get("origin_state", ""), "Origin state")
+    v.required(body.get("destination_state", ""), "Destination state")
     v.required(body.get("origin_datetime", ""), "Origin datetime")
     v.required(body.get("destination_datetime", ""), "Destination datetime")
     v.required(body.get("total_miles"), "Total miles")
@@ -45,6 +50,16 @@ def create_load_request(request) -> tuple:
 
     if not v.is_valid:
         return _fail(v.errors)
+
+    # validate states are real US states
+    origin_state = str(body["origin_state"]).strip().upper()
+    dest_state = str(body["destination_state"]).strip().upper()
+    valid_states = _get_valid_states()
+
+    if origin_state not in valid_states:
+        return _fail(f"Invalid origin_state '{origin_state}'. Must be a valid US state abbreviation")
+    if dest_state not in valid_states:
+        return _fail(f"Invalid destination_state '{dest_state}'. Must be a valid US state abbreviation")
 
     origin_dt, err = _parse_dt(body.get("origin_datetime"), "Origin datetime")
     if err:
@@ -60,20 +75,20 @@ def create_load_request(request) -> tuple:
     except (ValueError, TypeError):
         return _fail("Total miles and payout must be numbers")
 
+    # load_id is NEVER accepted from user — always auto-generated from route
     data = {
-        "load_id": str(body.get("load_id", "")).strip(),
         "tour_id": str(body.get("tour_id", "")).strip(),
         "origin_facility": str(body["origin_facility"]).strip(),
         "origin_address": str(body.get("origin_address", "")).strip(),
         "origin_city": str(body.get("origin_city", "")).strip(),
-        "origin_state": str(body.get("origin_state", "")).strip(),
+        "origin_state": origin_state,
         "origin_zip": str(body.get("origin_zip", "")).strip(),
         "origin_datetime": origin_dt,
         "origin_timezone": str(body.get("origin_timezone", "")).strip(),
         "destination_facility": str(body["destination_facility"]).strip(),
         "destination_address": str(body.get("destination_address", "")).strip(),
         "destination_city": str(body.get("destination_city", "")).strip(),
-        "destination_state": str(body.get("destination_state", "")).strip(),
+        "destination_state": dest_state,
         "destination_zip": str(body.get("destination_zip", "")).strip(),
         "destination_datetime": destination_dt,
         "destination_timezone": str(body.get("destination_timezone", "")).strip(),
@@ -198,8 +213,9 @@ def create_load_request(request) -> tuple:
 def update_load_request(request) -> tuple:
     body = _parse_body(request)
 
+    # load_id is NOT allowed — auto-generated from route
     allowed_fields = {
-        "load_id", "tour_id", "origin_facility", "origin_address", "origin_city",
+        "tour_id", "origin_facility", "origin_address", "origin_city",
         "origin_state", "origin_zip", "origin_datetime", "origin_timezone",
         "destination_facility", "destination_address", "destination_city",
         "destination_state", "destination_zip", "destination_datetime",
@@ -216,6 +232,19 @@ def update_load_request(request) -> tuple:
 
     if not data:
         return _fail("No fields to update")
+
+    # validate states if provided
+    valid_states = _get_valid_states()
+    if "origin_state" in data:
+        origin = str(data["origin_state"]).strip().upper()
+        if origin not in valid_states:
+            return _fail(f"Invalid origin_state '{origin}'. Must be a valid US state abbreviation")
+        data["origin_state"] = origin
+    if "destination_state" in data:
+        dest = str(data["destination_state"]).strip().upper()
+        if dest not in valid_states:
+            return _fail(f"Invalid destination_state '{dest}'. Must be a valid US state abbreviation")
+        data["destination_state"] = dest
 
     # validate numeric fields
     numeric_fields = [
@@ -280,7 +309,29 @@ def list_loads_request(request) -> tuple:
         "destination": request.GET.get("destination", "").strip(),
         "search": request.GET.get("search", "").strip(),
         "sort_by": request.GET.get("sort_by", "-created_at").strip(),
+        "route_id": request.GET.get("route_id", "").strip(),
+        "group": request.GET.get("group", "").strip().lower() in ("true", "1", "yes"),
     }
+
+    # payout range filters
+    min_payout = request.GET.get("min_payout")
+    if min_payout:
+        try:
+            data["min_payout"] = float(min_payout)
+        except (ValueError, TypeError):
+            return _fail("Invalid min_payout")
+
+    max_payout = request.GET.get("max_payout")
+    if max_payout:
+        try:
+            data["max_payout"] = float(max_payout)
+        except (ValueError, TypeError):
+            return _fail("Invalid max_payout")
+
+    # date filters
+    data["date_from"] = request.GET.get("date_from", "").strip()
+    data["date_to"] = request.GET.get("date_to", "").strip()
+    data["week"] = request.GET.get("week", "").strip()
 
     driver_id = request.GET.get("driver_id")
     if driver_id:

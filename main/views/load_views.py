@@ -26,15 +26,17 @@ def list_loads(request):
     if error:
         return _json(error)
 
+    page = data.pop("page")
+    per_page = data.pop("per_page")
+    group = data.pop("group")
+    sort_by = data.pop("sort_by")
+
+    # remaining data keys are the filters
+    filters = {k: v for k, v in data.items() if v not in (None, "", False)}
+
     return _json(LoadService.list_loads(
-        page=data["page"],
-        per_page=data["per_page"],
-        status=data.get("status", ""),
-        origin=data.get("origin", ""),
-        destination=data.get("destination", ""),
-        driver_id=data.get("driver_id"),
-        search=data.get("search", ""),
-        sort_by=data.get("sort_by", "-created_at"),
+        page=page, per_page=per_page, group=group,
+        sort_by=sort_by, **filters,
     ))
 
 

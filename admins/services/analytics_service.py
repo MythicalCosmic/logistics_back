@@ -1,6 +1,6 @@
 from datetime import timedelta
 
-from django.db.models import Count, Sum, Avg, Min, Max, Q
+from django.db.models import Count, Sum, Min, Max, Q
 from django.db.models.functions import TruncDate, TruncWeek
 from django.utils import timezone
 from django.utils.dateparse import parse_date
@@ -45,15 +45,11 @@ class LoadAnalyticsService:
                 q &= Q(created_at__date__lte=date_to)
         return q
 
-    # ── load frequency (same load_id appearing multiple times) ──────
+    # ── load frequency (same load_id / route appearing multiple times) ──
 
     @classmethod
     def load_frequency(cls, period="7d", page=1, per_page=20,
                        min_count=2, sort_by="-count") -> tuple:
-        """
-        Which load_ids appear most often?  Groups by load_id and counts
-        occurrences.  Only returns loads that appeared >= min_count times.
-        """
         cache_key = f"analytics:freq:{period}:{page}:{per_page}:{min_count}:{sort_by}"
         cached = CacheService.get(cache_key)
         if cached:
@@ -64,7 +60,6 @@ class LoadAnalyticsService:
         if start:
             qs = qs.filter(created_at__gte=start)
 
-        # only loads that have a non-empty load_id
         qs = qs.exclude(load_id="")
 
         freq = (
@@ -74,9 +69,9 @@ class LoadAnalyticsService:
                 first_seen=Min("created_at"),
                 last_seen=Max("created_at"),
                 total_payout=Sum("payout"),
-                avg_payout=Avg("payout"),
-                avg_miles=Avg("total_miles"),
-                statuses=Count("status", distinct=True),
+                most_expensive=Max("payout"),
+                cheapest=Min("payout"),
+                total_miles=Sum("total_miles"),
             )
             .filter(count__gte=min_count)
         )
@@ -93,7 +88,6 @@ class LoadAnalyticsService:
         offset = (page - 1) * per_page
         items = list(freq[offset:offset + per_page])
 
-        # enrich each item with status breakdown
         for item in items:
             status_counts = dict(
                 Load.objects.filter(load_id=item["load_id"])
@@ -102,24 +96,12 @@ class LoadAnalyticsService:
                 .values_list("status", "c")
             )
             item["status_breakdown"] = status_counts
-            # get the most common route for this load_id
-            route = (
-                Load.objects.filter(load_id=item["load_id"])
-                .values("origin_facility", "origin_city", "origin_state",
-                        "destination_facility", "destination_city", "destination_state")
-                .annotate(c=Count("id"))
-                .order_by("-c")
-                .first()
-            )
-            item["primary_route"] = {
-                "origin": f"{route['origin_facility']} ({route['origin_city']}, {route['origin_state']})",
-                "destination": f"{route['destination_facility']} ({route['destination_city']}, {route['destination_state']})",
-            } if route else None
             item["first_seen"] = item["first_seen"].isoformat() if item["first_seen"] else None
             item["last_seen"] = item["last_seen"].isoformat() if item["last_seen"] else None
             item["total_payout"] = str(item["total_payout"] or 0)
-            item["avg_payout"] = str(round(item["avg_payout"] or 0, 2))
-            item["avg_miles"] = str(round(item["avg_miles"] or 0, 1))
+            item["most_expensive"] = str(item["most_expensive"] or 0)
+            item["cheapest"] = str(item["cheapest"] or 0)
+            item["total_miles"] = str(item["total_miles"] or 0)
 
         result = {
             "period": label,
@@ -134,32 +116,28 @@ class LoadAnalyticsService:
         CacheService.set(cache_key, result, cls.CACHE_TTL)
         return ServiceResponse.success("Load frequency", data=result)
 
-    # ── route frequency (most common origin→destination pairs) ──────
+    # ── route frequency (most common origin→destination state pairs) ──
 
     @classmethod
     def route_frequency(cls, period="7d", page=1, per_page=20) -> tuple:
-        """Most common routes by origin_facility → destination_facility."""
         cache_key = f"analytics:routes:{period}:{page}:{per_page}"
         cached = CacheService.get(cache_key)
         if cached:
             return ServiceResponse.success("Route frequency", data=cached)
 
         start, label = cls._parse_period(period)
-        qs = Load.objects.all()
+        qs = Load.objects.exclude(load_id="")
         if start:
             qs = qs.filter(created_at__gte=start)
 
         routes = (
-            qs.values(
-                "origin_facility", "origin_city", "origin_state",
-                "destination_facility", "destination_city", "destination_state",
-            )
+            qs.values("load_id")
             .annotate(
                 count=Count("id"),
                 total_payout=Sum("payout"),
-                avg_payout=Avg("payout"),
-                avg_miles=Avg("total_miles"),
-                unique_load_ids=Count("load_id", distinct=True),
+                most_expensive=Max("payout"),
+                cheapest=Min("payout"),
+                total_miles=Sum("total_miles"),
             )
             .order_by("-count")
         )
@@ -170,8 +148,9 @@ class LoadAnalyticsService:
 
         for item in items:
             item["total_payout"] = str(item["total_payout"] or 0)
-            item["avg_payout"] = str(round(item["avg_payout"] or 0, 2))
-            item["avg_miles"] = str(round(item["avg_miles"] or 0, 1))
+            item["most_expensive"] = str(item["most_expensive"] or 0)
+            item["cheapest"] = str(item["cheapest"] or 0)
+            item["total_miles"] = str(item["total_miles"] or 0)
 
         result = {
             "period": label,
@@ -190,7 +169,6 @@ class LoadAnalyticsService:
 
     @classmethod
     def trends(cls, period="30d", group_by="day") -> tuple:
-        """Load creation counts grouped by day or week."""
         cache_key = f"analytics:trends:{period}:{group_by}"
         cached = CacheService.get(cache_key)
         if cached:
@@ -208,9 +186,10 @@ class LoadAnalyticsService:
             .annotate(
                 count=Count("id"),
                 total_payout=Sum("payout"),
-                avg_payout=Avg("payout"),
-                unique_load_ids=Count("load_id", distinct=True),
-                duplicate_count=Count("id") - Count("load_id", distinct=True),
+                most_expensive=Max("payout"),
+                cheapest=Min("payout"),
+                total_miles=Sum("total_miles"),
+                unique_routes=Count("load_id", distinct=True),
             )
             .order_by("period")
         )
@@ -221,13 +200,14 @@ class LoadAnalyticsService:
                 "date": row["period"].isoformat() if row["period"] else None,
                 "count": row["count"],
                 "total_payout": str(row["total_payout"] or 0),
-                "avg_payout": str(round(row["avg_payout"] or 0, 2)),
-                "unique_load_ids": row["unique_load_ids"],
-                "duplicate_count": row["duplicate_count"],
+                "most_expensive": str(row["most_expensive"] or 0),
+                "cheapest": str(row["cheapest"] or 0),
+                "total_miles": str(row["total_miles"] or 0),
+                "unique_routes": row["unique_routes"],
             })
 
         total_loads = sum(i["count"] for i in items)
-        total_unique = sum(i["unique_load_ids"] for i in items)
+        total_routes = sum(i["unique_routes"] for i in items)
 
         result = {
             "period": label,
@@ -235,8 +215,7 @@ class LoadAnalyticsService:
             "data": items,
             "summary": {
                 "total_loads": total_loads,
-                "total_unique_load_ids": total_unique,
-                "total_duplicates": total_loads - total_unique,
+                "total_unique_routes": total_routes,
                 "days_covered": len(items),
             },
         }
@@ -247,10 +226,6 @@ class LoadAnalyticsService:
 
     @classmethod
     def compare_periods(cls, period_a="7d", period_b="14d") -> tuple:
-        """
-        Compare two time periods side by side.
-        period_a = recent period, period_b = previous period (for comparison).
-        """
         cache_key = f"analytics:compare:{period_a}:{period_b}"
         cached = CacheService.get(cache_key)
         if cached:
@@ -267,53 +242,51 @@ class LoadAnalyticsService:
             if total == 0:
                 return {
                     "total_loads": 0,
-                    "unique_load_ids": 0,
-                    "duplicate_rate": "0.0",
+                    "unique_routes": 0,
                     "total_payout": "0",
-                    "avg_payout": "0",
-                    "avg_miles": "0",
+                    "most_expensive": "0",
+                    "cheapest": "0",
+                    "total_miles": "0",
                     "status_breakdown": {},
-                    "top_load_ids": [],
                     "top_routes": [],
                 }
 
             unique = qs.exclude(load_id="").values("load_id").distinct().count()
             agg = qs.aggregate(
                 total_payout=Sum("payout"),
-                avg_payout=Avg("payout"),
-                avg_miles=Avg("total_miles"),
+                most_expensive=Max("payout"),
+                cheapest=Min("payout"),
+                total_miles=Sum("total_miles"),
             )
             statuses = dict(
                 qs.values_list("status")
                 .annotate(c=Count("id"))
                 .values_list("status", "c")
             )
-            top_ids = list(
+            top_routes = list(
                 qs.exclude(load_id="")
                 .values("load_id")
-                .annotate(count=Count("id"))
-                .filter(count__gte=2)
-                .order_by("-count")[:5]
+                .annotate(
+                    count=Count("id"),
+                    total_payout=Sum("payout"),
+                    most_expensive=Max("payout"),
+                    cheapest=Min("payout"),
+                )
+                .order_by("-count")[:10]
             )
-            top_routes = list(
-                qs.values("origin_facility", "destination_facility")
-                .annotate(count=Count("id"))
-                .order_by("-count")[:5]
-            )
-
-            dup_rate = 0
-            if total > 0 and unique > 0:
-                dup_rate = round((total - unique) / total * 100, 1)
+            for r in top_routes:
+                r["total_payout"] = str(r["total_payout"] or 0)
+                r["most_expensive"] = str(r["most_expensive"] or 0)
+                r["cheapest"] = str(r["cheapest"] or 0)
 
             return {
                 "total_loads": total,
-                "unique_load_ids": unique,
-                "duplicate_rate": str(dup_rate),
+                "unique_routes": unique,
                 "total_payout": str(agg["total_payout"] or 0),
-                "avg_payout": str(round(agg["avg_payout"] or 0, 2)),
-                "avg_miles": str(round(agg["avg_miles"] or 0, 1)),
+                "most_expensive": str(agg["most_expensive"] or 0),
+                "cheapest": str(agg["cheapest"] or 0),
+                "total_miles": str(agg["total_miles"] or 0),
                 "status_breakdown": statuses,
-                "top_load_ids": top_ids,
                 "top_routes": top_routes,
             }
 
@@ -323,9 +296,8 @@ class LoadAnalyticsService:
         stats_a = _period_stats(start_a)
         stats_b = _period_stats(start_b, end=start_a)
 
-        # calculate changes
         changes = {}
-        for key in ("total_loads", "unique_load_ids"):
+        for key in ("total_loads", "unique_routes"):
             val_a = stats_a[key]
             val_b = stats_b[key]
             if val_b > 0:
@@ -348,7 +320,6 @@ class LoadAnalyticsService:
 
     @classmethod
     def overview(cls) -> tuple:
-        """High-level analytics dashboard."""
         cache_key = "analytics:overview"
         cached = CacheService.get(cache_key)
         if cached:
@@ -356,70 +327,85 @@ class LoadAnalyticsService:
 
         now = timezone.now()
 
-        # totals
         total = Load.objects.count()
-        total_unique = Load.objects.exclude(load_id="").values("load_id").distinct().count()
+        total_unique_routes = Load.objects.exclude(load_id="").values("load_id").distinct().count()
 
         # this week vs last week
         week_start = now - timedelta(days=7)
         prev_week_start = now - timedelta(days=14)
-        this_week = Load.objects.filter(created_at__gte=week_start).count()
-        last_week = Load.objects.filter(
-            created_at__gte=prev_week_start, created_at__lt=week_start
-        ).count()
 
-        # duplicates this week (same load_id appearing 2+ times)
-        duplicates_this_week = (
-            Load.objects.filter(created_at__gte=week_start)
-            .exclude(load_id="")
-            .values("load_id")
-            .annotate(count=Count("id"))
-            .filter(count__gte=2)
-            .count()
+        this_week_qs = Load.objects.filter(created_at__gte=week_start)
+        last_week_qs = Load.objects.filter(
+            created_at__gte=prev_week_start, created_at__lt=week_start
         )
 
-        # top 10 most repeated loads (all time)
-        top_repeated = list(
+        this_week_count = this_week_qs.count()
+        last_week_count = last_week_qs.count()
+
+        this_week_agg = this_week_qs.aggregate(
+            total_payout=Sum("payout"),
+            most_expensive=Max("payout"),
+            cheapest=Min("payout"),
+            total_miles=Sum("total_miles"),
+        )
+
+        # top 10 routes (all time) by load count
+        top_routes = list(
             Load.objects.exclude(load_id="")
             .values("load_id")
             .annotate(
                 count=Count("id"),
                 total_payout=Sum("payout"),
+                most_expensive=Max("payout"),
+                cheapest=Min("payout"),
+                total_miles=Sum("total_miles"),
                 last_seen=Max("created_at"),
             )
-            .filter(count__gte=2)
             .order_by("-count")[:10]
         )
-        for item in top_repeated:
+        for item in top_routes:
             item["total_payout"] = str(item["total_payout"] or 0)
+            item["most_expensive"] = str(item["most_expensive"] or 0)
+            item["cheapest"] = str(item["cheapest"] or 0)
+            item["total_miles"] = str(item["total_miles"] or 0)
             item["last_seen"] = item["last_seen"].isoformat() if item["last_seen"] else None
 
-        # top 5 routes this week
+        # top routes this week
         top_routes_week = list(
-            Load.objects.filter(created_at__gte=week_start)
-            .values("origin_facility", "origin_city", "origin_state",
-                    "destination_facility", "destination_city", "destination_state")
-            .annotate(count=Count("id"))
+            this_week_qs.exclude(load_id="")
+            .values("load_id")
+            .annotate(
+                count=Count("id"),
+                total_payout=Sum("payout"),
+                most_expensive=Max("payout"),
+                cheapest=Min("payout"),
+            )
             .order_by("-count")[:5]
         )
+        for r in top_routes_week:
+            r["total_payout"] = str(r["total_payout"] or 0)
+            r["most_expensive"] = str(r["most_expensive"] or 0)
+            r["cheapest"] = str(r["cheapest"] or 0)
 
         week_change = 0
-        if last_week > 0:
-            week_change = round((this_week - last_week) / last_week * 100, 1)
+        if last_week_count > 0:
+            week_change = round((this_week_count - last_week_count) / last_week_count * 100, 1)
 
         data = {
             "total_loads": total,
-            "total_unique_load_ids": total_unique,
-            "total_duplicates": total - total_unique if total > total_unique else 0,
+            "total_unique_routes": total_unique_routes,
             "this_week": {
-                "loads": this_week,
+                "loads": this_week_count,
                 "change_vs_last_week": str(week_change),
-                "duplicates": duplicates_this_week,
+                "total_payout": str(this_week_agg["total_payout"] or 0),
+                "most_expensive": str(this_week_agg["most_expensive"] or 0),
+                "cheapest": str(this_week_agg["cheapest"] or 0),
+                "total_miles": str(this_week_agg["total_miles"] or 0),
             },
             "last_week": {
-                "loads": last_week,
+                "loads": last_week_count,
             },
-            "top_repeated_loads": top_repeated,
+            "top_routes": top_routes,
             "top_routes_this_week": top_routes_week,
         }
 

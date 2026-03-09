@@ -229,6 +229,44 @@ class PasswordReset(models.Model):
         self.save(update_fields=["is_used"])
 
 
+class State(models.Model):
+    abbreviation = models.CharField(max_length=2, primary_key=True)
+    name = models.CharField(max_length=50)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "states"
+        ordering = ["abbreviation"]
+
+    def __str__(self):
+        return f"{self.abbreviation} - {self.name}"
+
+
+class Route(models.Model):
+    route_id = models.CharField(max_length=5, unique=True, db_index=True)
+    origin_state = models.ForeignKey(State, on_delete=models.CASCADE, related_name="origin_routes")
+    destination_state = models.ForeignKey(State, on_delete=models.CASCADE, related_name="destination_routes")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "routes"
+        ordering = ["route_id"]
+        unique_together = ["origin_state", "destination_state"]
+
+    def __str__(self):
+        return self.route_id
+
+    @classmethod
+    def get_or_create_route(cls, origin_abbr, destination_abbr):
+        route_id = f"{origin_abbr.upper()}-{destination_abbr.upper()}"
+        route, _ = cls.objects.get_or_create(
+            origin_state_id=origin_abbr.upper(),
+            destination_state_id=destination_abbr.upper(),
+            defaults={"route_id": route_id},
+        )
+        return route
+
+
 class Facility(models.Model):
     class Type(models.TextChoices):
         WAREHOUSE = "warehouse"
@@ -279,6 +317,9 @@ class Load(models.Model):
 
     load_id = models.CharField(max_length=100, blank=True, db_index=True)
     tour_id = models.CharField(max_length=100, blank=True, db_index=True)
+    route = models.ForeignKey(
+        "Route", on_delete=models.SET_NULL, null=True, blank=True, related_name="loads"
+    )
 
     origin_facility = models.CharField(max_length=100, db_index=True)
     origin_address = models.TextField(blank=True)
@@ -331,6 +372,7 @@ class Load(models.Model):
             models.Index(fields=["status", "created_at"]),
             models.Index(fields=["origin_datetime"]),
             models.Index(fields=["-payout"]),
+            models.Index(fields=["route", "created_at"]),
         ]
 
     def __str__(self):

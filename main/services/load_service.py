@@ -1,9 +1,12 @@
+from collections import OrderedDict
+
 from django.db import transaction
-from django.db.models import Q, Count, Sum, Avg
+from django.db.models import Q, Count, Sum, Min, Max
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 from datetime import timedelta
 
-from base.models import Load, LoadLeg, Stop, User
+from base.models import Load, LoadLeg, Stop, User, Route, State
 from base.services.base_service import ServiceResponse, CacheService
 
 
@@ -17,30 +20,34 @@ class LoadService:
         "cancelled": [],
     }
 
-    CACHE_TTL = 120  # 2 minutes for list caches
-    DETAIL_TTL = 300  # 5 minutes for detail caches
+    CACHE_TTL = 120
+    DETAIL_TTL = 300
 
     @classmethod
-    def _invalidate_load_caches(cls, load_id=None):
+    def _invalidate_load_caches(cls, load_pk=None, route_id=None):
         CacheService.delete_pattern("loads:list:*")
         CacheService.delete_pattern("loads:stats")
         CacheService.delete_pattern("loads:my:*")
-        if load_id:
-            CacheService.delete(f"loads:detail:{load_id}")
+        if load_pk:
+            CacheService.delete(f"loads:detail:{load_pk}")
+        if route_id:
+            from main.services.route_service import RouteService
+            RouteService.invalidate_route_caches(route_id)
+
+    # ── list loads ───────────────────────────────────────────────────
 
     @classmethod
-    def list_loads(cls, page=1, per_page=20, status="", origin="",
-                   destination="", driver_id=None, search="",
-                   sort_by="-created_at") -> tuple:
-        cache_key = f"loads:list:{page}:{per_page}:{status}:{origin}:{destination}:{driver_id}:{search}:{sort_by}"
-        cached = CacheService.get(cache_key)
-        if cached:
-            return ServiceResponse.success("Loads retrieved", data=cached)
-
+    def _build_load_qs(cls, status="", origin="", destination="",
+                       driver_id=None, search="", route_id="",
+                       min_payout=None, max_payout=None,
+                       date_from=None, date_to=None, week=None):
+        """Build filtered queryset. Shared by list and grouped views."""
         qs = Load.objects.all()
 
         if status:
             qs = qs.filter(status=status)
+        if route_id:
+            qs = qs.filter(load_id=route_id.upper())
         if origin:
             qs = qs.filter(
                 Q(origin_facility__icontains=origin) |
@@ -72,7 +79,51 @@ class LoadService:
                 Q(special_services__icontains=search) |
                 Q(equipment_type__icontains=search)
             )
+        if min_payout is not None:
+            qs = qs.filter(payout__gte=min_payout)
+        if max_payout is not None:
+            qs = qs.filter(payout__lte=max_payout)
+        if week:
+            # filter to a specific ISO week (Monday-Sunday)
+            week_date = parse_date(week) if isinstance(week, str) else week
+            if week_date:
+                # get Monday of that week
+                monday = week_date - timedelta(days=week_date.weekday())
+                sunday = monday + timedelta(days=7)
+                qs = qs.filter(created_at__date__gte=monday, created_at__date__lt=sunday)
+        else:
+            if date_from:
+                d = parse_date(date_from) if isinstance(date_from, str) else date_from
+                if d:
+                    qs = qs.filter(created_at__date__gte=d)
+            if date_to:
+                d = parse_date(date_to) if isinstance(date_to, str) else date_to
+                if d:
+                    qs = qs.filter(created_at__date__lte=d)
 
+        return qs
+
+    @classmethod
+    def list_loads(cls, page=1, per_page=20, group=False,
+                   sort_by="-created_at", **filters) -> tuple:
+        cache_parts = [
+            f"loads:list:{page}:{per_page}:{group}:{sort_by}",
+            ":".join(f"{k}={v}" for k, v in sorted(filters.items()) if v),
+        ]
+        cache_key = ":".join(cache_parts)
+        cached = CacheService.get(cache_key)
+        if cached:
+            return ServiceResponse.success("Loads retrieved", data=cached)
+
+        qs = cls._build_load_qs(**filters)
+
+        if group:
+            return cls._list_loads_grouped(qs, page, per_page, sort_by, cache_key)
+
+        return cls._list_loads_flat(qs, page, per_page, sort_by, cache_key)
+
+    @classmethod
+    def _list_loads_flat(cls, qs, page, per_page, sort_by, cache_key):
         allowed_sorts = {
             "created_at", "-created_at", "payout", "-payout",
             "total_miles", "-total_miles", "origin_datetime", "-origin_datetime",
@@ -86,7 +137,9 @@ class LoadService:
         qs = qs.order_by(sort_by)
         total = qs.count()
         offset = (page - 1) * per_page
-        loads = qs.select_related("registered_by", "assigned_driver")[offset:offset + per_page]
+        loads = qs.select_related(
+            "registered_by", "assigned_driver", "route"
+        )[offset:offset + per_page]
 
         result_data = {
             "loads": [cls._serialize_load_list(l) for l in loads],
@@ -101,6 +154,78 @@ class LoadService:
         return ServiceResponse.success("Loads retrieved", data=result_data)
 
     @classmethod
+    def _list_loads_grouped(cls, qs, page, per_page, sort_by, cache_key):
+        """Group loads by route. Paginate by route, loads inside sorted by payout desc."""
+
+        # get unique route_ids (load_ids) with stats, ordered by total load count desc
+        route_agg = (
+            qs.exclude(load_id="")
+            .values("load_id")
+            .annotate(
+                load_count=Count("id"),
+                total_payout=Sum("payout"),
+                most_expensive=Max("payout"),
+                cheapest=Min("payout"),
+                total_miles=Sum("total_miles"),
+            )
+            .order_by("-load_count")
+        )
+
+        total_routes = route_agg.count()
+        offset = (page - 1) * per_page
+        route_page = list(route_agg[offset:offset + per_page])
+
+        # load actual loads for each route on this page
+        route_ids = [r["load_id"] for r in route_page]
+        loads_qs = (
+            qs.filter(load_id__in=route_ids)
+            .select_related("registered_by", "assigned_driver", "route")
+        )
+
+        # determine sort within group
+        allowed_inner_sorts = {
+            "payout", "-payout", "created_at", "-created_at",
+            "total_miles", "-total_miles",
+        }
+        inner_sort = sort_by if sort_by in allowed_inner_sorts else "-payout"
+        loads_qs = loads_qs.order_by(inner_sort)
+
+        # bucket loads by route
+        loads_by_route = OrderedDict()
+        for rid in route_ids:
+            loads_by_route[rid] = []
+        for load in loads_qs:
+            loads_by_route.setdefault(load.load_id, []).append(load)
+
+        routes = []
+        for rdata in route_page:
+            rid = rdata["load_id"]
+            route_loads = loads_by_route.get(rid, [])
+            routes.append({
+                "route_id": rid,
+                "load_count": rdata["load_count"],
+                "total_payout": str(rdata["total_payout"] or 0),
+                "most_expensive": str(rdata["most_expensive"] or 0),
+                "cheapest": str(rdata["cheapest"] or 0),
+                "total_miles": str(rdata["total_miles"] or 0),
+                "loads": [cls._serialize_load_list(l) for l in route_loads],
+            })
+
+        result_data = {
+            "routes": routes,
+            "pagination": {
+                "page": page,
+                "per_page": per_page,
+                "total": total_routes,
+                "pages": max(1, (total_routes + per_page - 1) // per_page),
+            },
+        }
+        CacheService.set(cache_key, result_data, cls.CACHE_TTL)
+        return ServiceResponse.success("Loads retrieved", data=result_data)
+
+    # ── get load ─────────────────────────────────────────────────────
+
+    @classmethod
     def get_load(cls, load_id: int) -> tuple:
         cache_key = f"loads:detail:{load_id}"
         cached = CacheService.get(cache_key)
@@ -110,7 +235,7 @@ class LoadService:
         try:
             load = (
                 Load.objects
-                .select_related("registered_by", "assigned_driver")
+                .select_related("registered_by", "assigned_driver", "route")
                 .prefetch_related("legs", "stops")
                 .get(pk=load_id)
             )
@@ -121,11 +246,22 @@ class LoadService:
         CacheService.set(cache_key, data, cls.DETAIL_TTL)
         return ServiceResponse.success("Load retrieved", data=data)
 
+    # ── create load ──────────────────────────────────────────────────
+
     @classmethod
     @transaction.atomic
     def create_load(cls, user, **fields) -> tuple:
         legs_data = fields.pop("legs", [])
         stops_data = fields.pop("stops", [])
+
+        # origin_state and destination_state are required (enforced by request validator)
+        origin_state = fields["origin_state"].upper()
+        dest_state = fields["destination_state"].upper()
+
+        # create route and always auto-generate load_id
+        route = Route.get_or_create_route(origin_state, dest_state)
+        fields["route"] = route
+        fields["load_id"] = route.route_id
 
         load = Load.objects.create(registered_by=user, **fields)
 
@@ -137,18 +273,20 @@ class LoadService:
 
         load = (
             Load.objects
-            .select_related("registered_by", "assigned_driver")
+            .select_related("registered_by", "assigned_driver", "route")
             .prefetch_related("legs", "stops")
             .get(pk=load.pk)
         )
 
-        cls._invalidate_load_caches()
+        cls._invalidate_load_caches(route_id=route.route_id)
 
         return ServiceResponse.success(
             "Load created successfully",
             data=cls._serialize_load_detail(load),
             status=201,
         )
+
+    # ── update load ──────────────────────────────────────────────────
 
     @classmethod
     @transaction.atomic
@@ -161,6 +299,18 @@ class LoadService:
         if load.status in ("delivered", "cancelled"):
             return ServiceResponse.error("Cannot update a completed or cancelled load")
 
+        # re-compute route if origin/destination state changed
+        origin_state = fields.get("origin_state", load.origin_state).strip().upper()
+        dest_state = fields.get("destination_state", load.destination_state).strip().upper()
+        if (
+            origin_state and dest_state
+            and State.objects.filter(abbreviation=origin_state).exists()
+            and State.objects.filter(abbreviation=dest_state).exists()
+        ):
+            route = Route.get_or_create_route(origin_state, dest_state)
+            fields["route"] = route
+            fields["load_id"] = route.route_id
+
         update_fields = []
         for field, value in fields.items():
             setattr(load, field, value)
@@ -170,17 +320,19 @@ class LoadService:
 
         load = (
             Load.objects
-            .select_related("registered_by", "assigned_driver")
+            .select_related("registered_by", "assigned_driver", "route")
             .prefetch_related("legs", "stops")
             .get(pk=load.pk)
         )
 
-        cls._invalidate_load_caches(load_id)
+        cls._invalidate_load_caches(load_id, route_id=load.load_id)
 
         return ServiceResponse.success(
             "Load updated successfully",
             data=cls._serialize_load_detail(load),
         )
+
+    # ── cancel load ──────────────────────────────────────────────────
 
     @classmethod
     @transaction.atomic
@@ -196,9 +348,11 @@ class LoadService:
         load.status = "cancelled"
         load.save(update_fields=["status"])
 
-        cls._invalidate_load_caches(load_id)
+        cls._invalidate_load_caches(load_id, route_id=load.load_id)
 
         return ServiceResponse.success("Load cancelled successfully")
+
+    # ── assign driver ────────────────────────────────────────────────
 
     @classmethod
     @transaction.atomic
@@ -231,6 +385,8 @@ class LoadService:
             "status": load.status,
         })
 
+    # ── update status ────────────────────────────────────────────────
+
     @classmethod
     @transaction.atomic
     def update_status(cls, load_id: int, status: str) -> tuple:
@@ -249,12 +405,14 @@ class LoadService:
         load.status = status
         load.save(update_fields=["status"])
 
-        cls._invalidate_load_caches(load_id)
+        cls._invalidate_load_caches(load_id, route_id=load.load_id)
 
         return ServiceResponse.success("Status updated", data={
             "load_id": load.pk,
             "status": load.status,
         })
+
+    # ── my loads ─────────────────────────────────────────────────────
 
     @classmethod
     def my_loads(cls, user, page=1, per_page=20) -> tuple:
@@ -267,7 +425,9 @@ class LoadService:
 
         total = qs.count()
         offset = (page - 1) * per_page
-        loads = qs.select_related("registered_by", "assigned_driver")[offset:offset + per_page]
+        loads = qs.select_related(
+            "registered_by", "assigned_driver", "route"
+        )[offset:offset + per_page]
 
         result_data = {
             "loads": [cls._serialize_load_list(l) for l in loads],
@@ -280,6 +440,8 @@ class LoadService:
         }
         CacheService.set(cache_key, result_data, cls.CACHE_TTL)
         return ServiceResponse.success("My loads retrieved", data=result_data)
+
+    # ── stats ────────────────────────────────────────────────────────
 
     @classmethod
     def stats(cls) -> tuple:
@@ -303,10 +465,9 @@ class LoadService:
 
         financial = Load.objects.exclude(status="cancelled").aggregate(
             total_payout=Sum("payout"),
-            avg_payout=Avg("payout"),
-            sum_miles=Sum("total_miles"),
-            avg_miles=Avg("total_miles"),
-            avg_rate=Avg("rate_per_mile"),
+            total_miles=Sum("total_miles"),
+            most_expensive=Max("payout"),
+            cheapest=Min("payout"),
         )
 
         delivered = Load.objects.filter(
@@ -314,17 +475,21 @@ class LoadService:
             created_at__gte=now - timedelta(days=30),
         ).count()
 
-        top_origins = list(
-            Load.objects.values("origin_facility", "origin_city", "origin_state")
-            .annotate(count=Count("id"))
-            .order_by("-count")[:5]
+        top_routes = list(
+            Load.objects.exclude(load_id="")
+            .values("load_id")
+            .annotate(
+                count=Count("id"),
+                total_payout=Sum("payout"),
+                most_expensive=Max("payout"),
+                cheapest=Min("payout"),
+            )
+            .order_by("-count")[:10]
         )
-
-        top_destinations = list(
-            Load.objects.values("destination_facility", "destination_city", "destination_state")
-            .annotate(count=Count("id"))
-            .order_by("-count")[:5]
-        )
+        for r in top_routes:
+            r["total_payout"] = str(r["total_payout"] or 0)
+            r["most_expensive"] = str(r["most_expensive"] or 0)
+            r["cheapest"] = str(r["cheapest"] or 0)
 
         data = {
             "total_loads": total,
@@ -341,19 +506,17 @@ class LoadService:
             "delivered_last_30d": delivered,
             "financial": {
                 "total_payout": str(financial["total_payout"] or 0),
-                "avg_payout": str(round(financial["avg_payout"] or 0, 2)),
-                "total_miles": str(financial["sum_miles"] or 0),
-                "avg_miles": str(round(financial["avg_miles"] or 0, 1)),
-                "avg_rate_per_mile": str(round(financial["avg_rate"] or 0, 2)),
+                "total_miles": str(financial["total_miles"] or 0),
+                "most_expensive": str(financial["most_expensive"] or 0),
+                "cheapest": str(financial["cheapest"] or 0),
             },
-            "top_origins": top_origins,
-            "top_destinations": top_destinations,
+            "top_routes": top_routes,
         }
 
         CacheService.set(cache_key, data, cls.CACHE_TTL)
         return ServiceResponse.success("Load statistics", data=data)
 
-    # -- serializers --
+    # ── serializers ──────────────────────────────────────────────────
 
     @classmethod
     def _serialize_load_list(cls, load: Load) -> dict:
@@ -361,6 +524,7 @@ class LoadService:
             "id": load.pk,
             "load_id": load.load_id,
             "tour_id": load.tour_id,
+            "route_id": load.route.route_id if load.route_id else None,
             "origin_facility": load.origin_facility,
             "origin_city": load.origin_city,
             "origin_state": load.origin_state,

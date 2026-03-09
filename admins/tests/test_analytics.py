@@ -44,10 +44,9 @@ class TestAnalyticsOverview:
         data = resp.json()["data"]
         assert "total_loads" in data
         assert data["total_loads"] == 20
-        assert "total_unique_load_ids" in data
-        assert "total_duplicates" in data
+        assert "total_unique_routes" in data
         assert "this_week" in data
-        assert "top_repeated_loads" in data
+        assert "top_routes" in data
         assert "top_routes_this_week" in data
 
     def test_overview_empty(self, api_client, admin_headers):
@@ -73,12 +72,13 @@ class TestLoadFrequency:
         data = resp.json()["data"]
         assert "loads" in data
         assert "pagination" in data
-        # LD-0 through LD-4, each appears 4 times (20/5), all >= min_count=2
         assert len(data["loads"]) >= 1
         for load in data["loads"]:
             assert load["count"] >= 2
-            assert "primary_route" in load
             assert "status_breakdown" in load
+            assert "most_expensive" in load
+            assert "cheapest" in load
+            assert "total_payout" in load
 
     def test_frequency_min_count(self, api_client, admin_headers, admin_user):
         _seed_loads(admin_user, 20)
@@ -88,8 +88,6 @@ class TestLoadFrequency:
         )
         assert resp.status_code == 200
         loads = resp.json()["data"]["loads"]
-        # With 20 loads and 5 unique IDs, none has count >= 5 (each has 4)
-        # Actually 20/5 = 4, so none >= 5
         assert all(l["count"] >= 5 for l in loads)
 
     def test_frequency_custom_period(self, api_client, admin_headers, admin_user):
@@ -121,10 +119,11 @@ class TestRouteFrequency:
         assert "routes" in data
         assert len(data["routes"]) >= 1
         route = data["routes"][0]
-        assert "origin_facility" in route
-        assert "destination_facility" in route
+        assert "load_id" in route
         assert "count" in route
-        assert "avg_payout" in route
+        assert "total_payout" in route
+        assert "most_expensive" in route
+        assert "cheapest" in route
 
     def test_routes_pagination(self, api_client, admin_headers, admin_user):
         _seed_loads(admin_user, 20)
@@ -159,12 +158,16 @@ class TestTrends:
         data = resp.json()["data"]
         assert data["group_by"] == "week"
 
-    def test_trends_track_duplicates(self, api_client, admin_headers, admin_user):
+    def test_trends_data_fields(self, api_client, admin_headers, admin_user):
         _seed_loads(admin_user, 20)
         resp = api_client.get("/admin-api/analytics/loads/trends?period=30d", **admin_headers)
         data = resp.json()["data"]
-        total_dups = sum(d["duplicate_count"] for d in data["data"])
-        assert data["summary"]["total_duplicates"] == total_dups
+        for entry in data["data"]:
+            assert "count" in entry
+            assert "total_payout" in entry
+            assert "most_expensive" in entry
+            assert "cheapest" in entry
+            assert "unique_routes" in entry
 
     def test_permission_required(self, api_client, driver_headers):
         resp = api_client.get("/admin-api/analytics/loads/trends", **driver_headers)
@@ -198,7 +201,6 @@ class TestComparePeriods:
         assert data["period_a"]["stats"]["total_loads"] == 0
 
     def test_compare_requires_analytics_compare_permission(self, api_client, seed_permissions):
-        # Manager has analytics.compare, driver does not
         from base.models import User
         user = _make_user("noperm@test.com")
         session = make_session(user)

@@ -1,6 +1,6 @@
 from django.urls import path
 
-from main.views import auth_views, load_views, facility_views
+from main.views import auth_views, load_views, facility_views, route_views
 
 urlpatterns = [
     path("login", auth_views.login, name="auth_login"),
@@ -22,6 +22,13 @@ urlpatterns = [
     path("loads/<int:load_id>/cancel", load_views.cancel_load, name="load_cancel"),
     path("loads/<int:load_id>/assign", load_views.assign_driver, name="load_assign"),
     path("loads/<int:load_id>/status", load_views.update_status, name="load_status"),
+
+    # States & Routes
+    path("states", route_views.list_states, name="state_list"),
+    path("routes", route_views.list_routes, name="route_list"),
+    path("routes/<str:route_id>", route_views.get_route, name="route_detail"),
+    path("routes/<str:route_id>/loads", route_views.route_loads, name="route_loads"),
+    path("routes/<str:route_id>/analytics", route_views.route_analytics, name="route_analytics"),
 
     # Facilities (read-only)
     path("facilities", facility_views.list_facilities, name="facility_list"),

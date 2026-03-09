@@ -37,8 +37,14 @@ def api_client():
 
 
 @pytest.fixture
-def seed_permissions(db):
-    """Seed all permissions and default roles."""
+def seed_states(db):
+    """Seed all 50 US states."""
+    call_command("seed_states", verbosity=0)
+
+
+@pytest.fixture
+def seed_permissions(db, seed_states):
+    """Seed all permissions and default roles (also seeds states)."""
     call_command("seed_permissions", verbosity=0)
 
 
