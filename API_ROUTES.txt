@@ -1,0 +1,1460 @@
+================================================================================
+LOGISTICS PLATFORM - COMPLETE API DOCUMENTATION
+================================================================================
+
+Base URL: http://localhost:8000
+Swagger UI: http://localhost:8000/
+ReDoc: http://localhost:8000/api/docs/redoc/
+
+Authentication: Session-based
+  - Header: Authorization: Session <session_key>
+  - Or via cookie (set automatically on login)
+
+All responses follow this format:
+{
+  "success": true/false,
+  "message": "...",
+  "data": { ... }  // only on success, may be null
+}
+
+Status codes: 200 (ok), 201 (created), 400 (bad request), 401 (unauthorized),
+              403 (forbidden), 404 (not found), 429 (rate limited)
+
+
+================================================================================
+PUBLIC API (/api/)
+================================================================================
+
+────────────────────────────────────────────────────────────────────────────────
+AUTH ENDPOINTS
+────────────────────────────────────────────────────────────────────────────────
+
+POST /api/login
+  Login and get a session key.
+  Body:
+    email        (string, required)
+    password     (string, required, min 8 chars)
+    device       (string, optional) - device identifier
+  Returns:
+    session_key  (string) - use this for all authenticated requests
+    user         (object) - user profile
+    permissions  (array)  - list of permission codenames
+  Rate limit: 5 attempts per 15 min per IP
+  Example:
+    POST /api/login
+    {"email": "john@example.com", "password": "MyP@ss123", "device": "Chrome"}
+  Response:
+    {
+      "success": true,
+      "message": "Login successful",
+      "data": {
+        "session_key": "7a7b3b3ac68d...",
+        "user": {
+          "id": 1,
+          "email": "john@example.com",
+          "first_name": "John",
+          "last_name": "Doe",
+          "full_name": "John Doe",
+          "phone": "",
+          "is_active": true,
+          "email_verified": false,
+          "last_login": "2026-03-16T06:00:00+00:00",
+          "last_login_ip": "127.0.0.1",
+          "created_at": "2026-03-09T08:00:00+00:00",
+          "updated_at": "2026-03-16T06:00:00+00:00",
+          "roles": [{"id": 1, "name": "Admin", "slug": "admin"}],
+          "permissions": ["users.view", "loads.view", ...]
+        },
+        "permissions": ["users.view", "loads.view", ...]
+      }
+    }
+
+POST /api/logout
+  Logout current session.
+  Auth: required
+  Body: none
+  Response: {"success": true, "message": "Logged out successfully"}
+
+POST /api/logout/all
+  Logout all sessions for current user.
+  Auth: required
+  Body: none
+  Response: {"success": true, "message": "All sessions terminated"}
+
+GET /api/me
+  Get current user profile.
+  Auth: required
+  Response:
+    {
+      "success": true,
+      "data": {
+        "id": 1,
+        "email": "john@example.com",
+        "first_name": "John",
+        "last_name": "Doe",
+        "full_name": "John Doe",
+        "phone": "",
+        "is_active": true,
+        "email_verified": false,
+        "last_login": "2026-03-16T06:00:00+00:00",
+        "last_login_ip": "127.0.0.1",
+        "created_at": "2026-03-09T08:00:00+00:00",
+        "updated_at": "2026-03-16T06:00:00+00:00",
+        "roles": [{"id": 1, "name": "Admin", "slug": "admin"}],
+        "permissions": ["users.view", "loads.view", ...]
+      }
+    }
+
+POST /api/password/change
+  Change password for current user.
+  Auth: required
+  Body:
+    current_password  (string, required)
+    new_password      (string, required, must be 8+ chars with uppercase, lowercase, number, special char)
+  Response: {"success": true, "message": "Password changed"}
+  Side effect: terminates all other sessions
+
+POST /api/password/reset
+  Request a password reset token.
+  Body:
+    email  (string, required, valid email format)
+  Response: always returns success (prevents email enumeration)
+
+POST /api/password/reset/confirm
+  Confirm password reset with token.
+  Body:
+    token         (string, required)
+    new_password  (string, required, password strength validated)
+  Response: {"success": true, "message": "Password reset successfully"}
+
+GET /api/sessions
+  List all active sessions for current user.
+  Auth: required
+  Response:
+    {
+      "data": {
+        "sessions": [
+          {
+            "key": "7a7b3b3ac68d...",   // masked (first 12 chars)
+            "device": "Chrome",
+            "ip_address": "127.0.0.1",
+            "is_current": true,
+            "last_activity_at": "2026-03-16T06:00:00+00:00",
+            "created_at": "2026-03-15T10:00:00+00:00",
+            "expires_at": "2026-03-18T10:00:00+00:00"
+          }
+        ]
+      }
+    }
+
+DELETE /api/sessions
+  Revoke a specific session.
+  Auth: required
+  Body:
+    session_key  (string, required) - the key of the session to revoke
+
+
+────────────────────────────────────────────────────────────────────────────────
+LOADS ENDPOINTS
+────────────────────────────────────────────────────────────────────────────────
+
+GET /api/loads
+  List loads with filtering, sorting, pagination, and optional grouping.
+  Auth: required
+  Permission: loads.view
+
+  Query Parameters:
+    page               (int, default=1)          - page number
+    per_page           (int, default=20, max=100) - items per page
+    search             (string)   - searches across: load_id, tour_id, origin/destination facility/city/state, equipment_type, special_services
+    status             (string)   - exact match: "available", "booked", "in_transit", "delivered", "cancelled"
+    origin             (string)   - broad search across origin fields (facility, city, state, address, zip)
+    destination        (string)   - broad search across destination fields (facility, city, state, address, zip)
+    origin_state       (string)   - EXACT state filter, e.g. "TX" (case-insensitive)
+    destination_state  (string)   - EXACT state filter, e.g. "NY" (case-insensitive)
+    route_id           (string)   - filter by route like "TX-NY"
+    driver_id          (int)      - filter by assigned driver
+    min_payout         (number)   - minimum payout
+    max_payout         (number)   - maximum payout
+    date_from          (string)   - ISO date "2026-03-01", filters created_at >= date
+    date_to            (string)   - ISO date "2026-03-15", filters created_at <= date
+    week               (string)   - ISO date, filters to that Monday-Sunday week (overrides date_from/date_to)
+    sort_by            (string, default="-created_at")
+    group              (bool)     - "true" to group loads by route
+
+  Valid sort_by: created_at, -created_at, payout, -payout, total_miles, -total_miles,
+                 origin_datetime, -origin_datetime, destination_datetime, -destination_datetime,
+                 rate_per_mile, -rate_per_mile, status, -status, id, -id
+
+  Example: GET /api/loads?origin_state=TX&destination_state=NY&status=available&sort_by=-payout&page=1&per_page=10
+
+  Response (flat, group=false):
+    {
+      "data": {
+        "loads": [
+          {
+            "id": 123,
+            "load_id": "TX-NY",
+            "tour_id": "TR-12345",
+            "route_id": "TX-NY",
+            "origin_facility": "WH-TX-100",
+            "origin_city": "Dallas",
+            "origin_state": "TX",
+            "destination_facility": "DC-NY-200",
+            "destination_city": "New York",
+            "destination_state": "NY",
+            "origin_datetime": "2026-03-10T10:00:00+00:00",
+            "destination_datetime": "2026-03-12T14:00:00+00:00",
+            "total_stops": 2,
+            "total_miles": "1550.0",
+            "payout": "4500.00",
+            "rate_per_mile": "2.90",
+            "driver_type": "solo",
+            "load_type": "drop",
+            "status": "available",
+            "assigned_driver": null,
+            "created_at": "2026-03-09T08:00:00+00:00"
+          }
+        ],
+        "pagination": {
+          "page": 1,
+          "per_page": 20,
+          "total": 2207,
+          "pages": 111
+        }
+      }
+    }
+
+  Response (grouped, group=true):
+    Pagination is by ROUTE (not individual loads). Each route contains all its loads.
+    {
+      "data": {
+        "routes": [
+          {
+            "route_id": "TX-NY",
+            "load_count": 2207,
+            "total_payout": "9100000.00",
+            "most_expensive": "11095.55",
+            "cheapest": "300.00",
+            "total_miles": "3400000.0",
+            "loads": [ ...load objects... ]
+          }
+        ],
+        "pagination": {
+          "page": 1,
+          "per_page": 20,
+          "total": 98,      // total routes, not loads
+          "pages": 5
+        }
+      }
+    }
+
+GET /api/loads/<id>
+  Get single load with full detail (includes legs, stops, addresses).
+  Auth: required
+  Permission: loads.view
+  Example: GET /api/loads/123
+  Response:
+    {
+      "data": {
+        "id": 123,
+        "load_id": "TX-NY",
+        "tour_id": "TR-12345",
+        "route_id": "TX-NY",
+        "origin_facility": "WH-TX-100",
+        "origin_city": "Dallas",
+        "origin_state": "TX",
+        "origin_address": "123 Main St",
+        "origin_zip": "75201",
+        "origin_timezone": "CST",
+        "destination_facility": "DC-NY-200",
+        "destination_city": "New York",
+        "destination_state": "NY",
+        "destination_address": "456 Broadway",
+        "destination_zip": "10001",
+        "destination_timezone": "EST",
+        "origin_datetime": "2026-03-10T10:00:00+00:00",
+        "destination_datetime": "2026-03-12T14:00:00+00:00",
+        "total_stops": 2,
+        "total_miles": "1550.0",
+        "deadhead_miles": "50.0",
+        "payout": "4500.00",
+        "rate_per_mile": "2.90",
+        "base_rate_per_mile": "2.50",
+        "toll": "45.00",
+        "profit_per_mile": "2.90",
+        "driver_type": "solo",
+        "load_type": "drop",
+        "direction": "one_way",
+        "equipment_type": "53' Trailer",
+        "equipment_provided": true,
+        "duration": "2 days",
+        "special_services": "",
+        "status": "available",
+        "assigned_driver": null,
+        "registered_by": {
+          "id": 1,
+          "full_name": "John Doe"
+        },
+        "created_at": "2026-03-09T08:00:00+00:00",
+        "updated_at": "2026-03-09T08:00:00+00:00",
+        "legs": [
+          {
+            "id": 1,
+            "leg_number": 1,
+            "leg_code": "LEG-001",
+            "origin_facility": "WH-TX-100",
+            "destination_facility": "DC-NY-200",
+            "miles": "1550.0",
+            "duration": "2 days",
+            "payout": "4500.00",
+            "load_type": "drop",
+            "status": "loaded"
+          }
+        ],
+        "stops": [
+          {
+            "id": 1,
+            "stop_number": 1,
+            "facility_code": "WH-TX-100",
+            "address": "123 Main St",
+            "city": "Dallas",
+            "state": "TX",
+            "zip_code": "75201",
+            "equipment": "",
+            "arrival_at": "2026-03-10T10:00:00+00:00",
+            "arrival_timezone": "CST",
+            "departure_at": "2026-03-10T12:00:00+00:00",
+            "departure_timezone": "CST",
+            "miles_to_next": "1550.0"
+          }
+        ]
+      }
+    }
+
+POST /api/loads/create
+  Create a new load. load_id is auto-generated from origin/destination state.
+  Auth: required
+  Permission: loads.create
+  Body:
+    origin_facility       (string, required)
+    destination_facility  (string, required)
+    origin_state          (string, required, valid US state abbreviation e.g. "TX")
+    destination_state     (string, required, valid US state abbreviation e.g. "NY")
+    origin_datetime       (string, required, ISO datetime e.g. "2026-03-10T10:00:00Z")
+    destination_datetime  (string, required, ISO datetime)
+    total_miles           (number, required)
+    payout                (number, required)
+    tour_id               (string, optional)
+    origin_address        (string, optional)
+    origin_city           (string, optional)
+    origin_zip            (string, optional)
+    origin_timezone       (string, optional)
+    destination_address   (string, optional)
+    destination_city      (string, optional)
+    destination_zip       (string, optional)
+    destination_timezone  (string, optional)
+    total_stops           (int, default=2)
+    deadhead_miles        (number, default=0)
+    toll                  (number, default=0)
+    rate_per_mile         (number, optional)
+    base_rate_per_mile    (number, optional)
+    driver_type           (string, default="solo") - "solo" or "team"
+    load_type             (string, default="drop") - "drop", "live", or "hook"
+    direction             (string, default="one_way") - "one_way" or "round_trip"
+    equipment_type        (string, default="53' Trailer")
+    equipment_provided    (bool, default=true)
+    duration              (string, optional)
+    special_services      (string, optional)
+    legs                  (array, optional) - see legs format below
+    stops                 (array, optional) - see stops format below
+  Response: 201 with full load detail object
+
+  Leg format:
+    {
+      "leg_number": 1,
+      "leg_code": "LEG-001",
+      "origin_facility": "WH-TX-100",      // required
+      "destination_facility": "DC-NY-200",  // required
+      "miles": 1550,                        // required
+      "duration": "2 days",
+      "payout": 4500,
+      "load_type": "drop",
+      "status": "loaded"
+    }
+
+  Stop format:
+    {
+      "stop_number": 1,
+      "facility_code": "WH-TX-100",   // required
+      "address": "123 Main St",
+      "city": "Dallas",
+      "state": "TX",
+      "zip_code": "75201",
+      "equipment": "",
+      "arrival_at": "2026-03-10T10:00:00Z",
+      "arrival_timezone": "CST",
+      "departure_at": "2026-03-10T12:00:00Z",
+      "departure_timezone": "CST",
+      "miles_to_next": 1550
+    }
+
+PUT /api/loads/<id>/update
+  Update a load. Cannot update delivered or cancelled loads.
+  If origin_state or destination_state changes, route and load_id auto-update.
+  Auth: required
+  Permission: loads.update
+  Body: any field from create (except load_id which is always auto-generated)
+  Response: updated load detail object
+
+POST /api/loads/<id>/cancel
+  Cancel a load. Cannot cancel delivered or already cancelled loads.
+  Auth: required
+  Permission: loads.update
+  Body: none
+  Response: {"success": true, "message": "Load cancelled successfully"}
+
+POST /api/loads/<id>/assign
+  Assign a driver to a load. Auto-transitions "available" to "booked".
+  Auth: required
+  Permission: loads.assign
+  Body:
+    driver_id  (int, required) - must be an active user
+  Response:
+    {"data": {"load_id": 123, "assigned_driver": 5, "status": "booked"}}
+
+POST /api/loads/<id>/status
+  Update load status. Must follow valid transitions:
+    available  -> booked, cancelled
+    booked     -> in_transit, cancelled
+    in_transit -> delivered
+    delivered  -> (terminal, no transitions)
+    cancelled  -> (terminal, no transitions)
+  Auth: required
+  Permission: loads.update
+  Body:
+    status  (string, required) - must be a valid transition
+  Response:
+    {"data": {"load_id": 123, "status": "in_transit"}}
+
+GET /api/loads/my
+  Get loads assigned to the current user.
+  Auth: required (no specific permission needed)
+  Query params: page, per_page
+  Response: same format as flat loads list
+
+GET /api/loads/stats
+  Load statistics dashboard.
+  Auth: required
+  Permission: loads.view
+  Response:
+    {
+      "data": {
+        "total_loads": 142500,
+        "status_breakdown": {
+          "available": 56613,
+          "booked": 28618,
+          "in_transit": 21315,
+          "delivered": 28647,
+          "cancelled": 7307
+        },
+        "new_last_24h": 0,
+        "new_last_7d": 142500,
+        "new_last_30d": 142500,
+        "delivered_last_30d": 28647,
+        "financial": {
+          "total_payout": "589000000.00",
+          "total_miles": "213000000.0",
+          "most_expensive": "11327.08",
+          "cheapest": "200.50"
+        },
+        "top_routes": [
+          {"load_id": "IL-TX", "count": 2268, "total_payout": "9461026.26", "most_expensive": "11207.31", "cheapest": "201.00"}
+        ]
+      }
+    }
+
+
+────────────────────────────────────────────────────────────────────────────────
+STATES & ROUTES ENDPOINTS (public)
+────────────────────────────────────────────────────────────────────────────────
+
+GET /api/states
+  List all 50 US states. Optionally include routes with loads.
+  Auth: required
+  Permission: loads.view
+  Query params:
+    loads     (bool, default=false) - if true, returns routes grouped by state with their loads (paginated)
+    page      (int, default=1)      - only used when loads=true
+    per_page  (int, default=20)     - only used when loads=true
+
+  Response (loads=false): {"data": {"states": [{"abbreviation": "TX", "name": "Texas"}, ...], "total": 50}}
+  Response (loads=true):  paginated routes with nested loads
+
+GET /api/routes
+  List routes with load stats.
+  Auth: required
+  Permission: loads.view
+  Query params:
+    page       (int, default=1)
+    per_page   (int, default=20, max=100)
+    search     (string)    - searches route_id, state names/abbreviations
+    sort_by    (string, default="-load_count")
+    loads      (bool)      - if true, include actual load objects nested inside each route
+    week       (string)    - ISO date, filters loads to that week
+    date_from  (string)    - ISO date
+    date_to    (string)    - ISO date
+
+  Valid sort_by: load_count, -load_count, total_payout, -total_payout,
+                 most_expensive, -most_expensive, cheapest, -cheapest,
+                 route_id, -route_id, latest_load, -latest_load
+
+  Response:
+    {
+      "data": {
+        "routes": [
+          {
+            "route_id": "TX-NY",
+            "origin_state": {"abbreviation": "TX", "name": "Texas"},
+            "destination_state": {"abbreviation": "NY", "name": "New York"},
+            "load_count": 2207,
+            "total_payout": "9100000.00",
+            "most_expensive": "11095.55",
+            "cheapest": "300.00",
+            "total_miles": "3400000.0",
+            "latest_load": "2026-03-09T08:58:00+00:00",
+            "created_at": "2026-03-09T08:51:00+00:00"
+          }
+        ],
+        "pagination": {"page": 1, "per_page": 20, "total": 98, "pages": 5}
+      }
+    }
+
+GET /api/routes/<route_id>
+  Get route detail with status breakdown.
+  Auth: required
+  Permission: loads.view
+  Example: GET /api/routes/TX-NY
+  Response:
+    {
+      "data": {
+        "route_id": "TX-NY",
+        "origin_state": {"abbreviation": "TX", "name": "Texas"},
+        "destination_state": {"abbreviation": "NY", "name": "New York"},
+        "load_count": 2207,
+        "total_payout": "9100000.00",
+        "most_expensive": "11095.55",
+        "cheapest": "300.00",
+        "total_miles": "3400000.0",
+        "latest_load": "2026-03-09T08:58:00+00:00",
+        "earliest_load": "2026-03-09T08:51:00+00:00",
+        "created_at": "2026-03-09T08:51:00+00:00",
+        "status_breakdown": {
+          "available": 880,
+          "booked": 450,
+          "in_transit": 330,
+          "delivered": 440,
+          "cancelled": 107
+        }
+      }
+    }
+
+GET /api/routes/<route_id>/loads
+  List loads for a specific route with full filtering.
+  Auth: required
+  Permission: loads.view
+  Example: GET /api/routes/TX-NY/loads?status=available&sort_by=-payout&min_payout=5000
+  Query params:
+    page        (int, default=1)
+    per_page    (int, default=20, max=100)
+    status      (string)    - filter by load status
+    sort_by     (string, default="-created_at")
+    week        (string)    - ISO date
+    date_from   (string)    - ISO date
+    date_to     (string)    - ISO date
+    min_payout  (number)    - minimum payout filter
+    max_payout  (number)    - maximum payout filter
+
+  Valid sort_by: created_at, -created_at, payout, -payout, total_miles, -total_miles,
+                 origin_datetime, -origin_datetime, rate_per_mile, -rate_per_mile
+
+  Response:
+    {
+      "data": {
+        "route_id": "TX-NY",
+        "totals": {
+          "total_loads": 2207,
+          "total_payout": "9100000.00",
+          "most_expensive": "11095.55",
+          "cheapest": "300.00",
+          "total_miles": "3400000.0"
+        },
+        "loads": [ ...load list objects... ],
+        "pagination": {"page": 1, "per_page": 20, "total": 2207, "pages": 111}
+      }
+    }
+
+GET /api/routes/<route_id>/analytics
+  Time-series analytics for a specific route.
+  Auth: required
+  Permission: loads.view
+  Query params:
+    period  (string, default="weekly") - "weekly", "monthly", or "yearly"
+  Example: GET /api/routes/TX-NY/analytics?period=monthly
+  Response:
+    {
+      "data": {
+        "route_id": "TX-NY",
+        "origin_state": {"abbreviation": "TX", "name": "Texas"},
+        "destination_state": {"abbreviation": "NY", "name": "New York"},
+        "period_type": "monthly",
+        "summary": {
+          "total_loads": 2207,
+          "total_payout": "9100000.00",
+          "most_expensive": "11095.55",
+          "cheapest": "300.00",
+          "total_miles": "3400000.0"
+        },
+        "periods": [
+          {
+            "period": "2026-03-01",
+            "total_loads": 2207,
+            "total_payout": "9100000.00",
+            "most_expensive": "11095.55",
+            "cheapest": "300.00",
+            "total_miles": "3400000.0",
+            "status_breakdown": {
+              "available": 880,
+              "booked": 450,
+              "in_transit": 330,
+              "delivered": 440,
+              "cancelled": 107
+            }
+          }
+        ]
+      }
+    }
+
+
+────────────────────────────────────────────────────────────────────────────────
+FACILITIES ENDPOINTS (public, read-only)
+────────────────────────────────────────────────────────────────────────────────
+
+GET /api/facilities
+  List facilities with filtering.
+  Auth: required (no specific permission)
+  Query params:
+    page           (int, default=1)
+    per_page       (int, default=20, max=100)
+    facility_type  (string) - exact match filter
+    state          (string) - case-insensitive exact match
+    city           (string) - case-insensitive contains
+    search         (string) - searches across: code, name, city, state, address, zip_code
+  Response:
+    {
+      "data": {
+        "facilities": [
+          {
+            "id": 1,
+            "code": "WH-TX-100",
+            "name": "Dallas Warehouse",
+            "address": "123 Main St",
+            "city": "Dallas",
+            "state": "TX",
+            "zip_code": "75201",
+            "facility_type": "warehouse",
+            "created_at": "2026-03-09T08:00:00+00:00"
+          }
+        ],
+        "pagination": {"page": 1, "per_page": 20, "total": 500, "pages": 25}
+      }
+    }
+
+GET /api/facilities/<id>
+  Get single facility detail.
+  Auth: required
+  Response: single facility object (same fields as above)
+
+
+================================================================================
+ADMIN API (/admin-api/)
+================================================================================
+
+All admin endpoints require authentication + specific permissions.
+
+
+────────────────────────────────────────────────────────────────────────────────
+ADMIN: STATES
+────────────────────────────────────────────────────────────────────────────────
+
+GET /admin-api/states
+  List all states with load counts and financial stats.
+  Permission: analytics.view
+  Query params:
+    page       (int, default=1)
+    per_page   (int, default=20, max=100)
+    search     (string)  - filter by state name or abbreviation
+    period     (string, default="all") - "weekly" (7d), "monthly" (30d), "yearly" (365d), "all"
+    sort_by    (string, default="-load_count")
+
+  Valid sort_by: load_count, -load_count, abbreviation, -abbreviation, name, -name
+
+  Example: GET /admin-api/states?period=weekly&sort_by=-load_count&search=tex
+  Response:
+    {
+      "data": {
+        "period": "Last 7 days",
+        "most_expensive_load": {
+          "id": 117653,
+          "load_id": "TN-GA",
+          "payout": "11327.08",
+          ...full load object...
+        },
+        "states": [
+          {
+            "abbreviation": "TX",
+            "name": "Texas",
+            "load_count": 28190,
+            "route_count": 98,
+            "total_payout": "116348326.08",
+            "most_expensive": "11280.0",
+            "total_miles": "42367462.0"
+          }
+        ],
+        "pagination": {"page": 1, "per_page": 20, "total": 50, "pages": 3}
+      }
+    }
+
+GET /admin-api/states/<abbreviation>
+  State detail: all routes for a state, with overview stats.
+  Shows routes like TX-NY, TX-CA, IL-TX, etc. grouped with load counts.
+  Permission: analytics.view
+
+  Query params:
+    page         (int, default=1)
+    per_page     (int, default=20, max=100)
+    search       (string)    - search routes by route_id or state name/abbreviation
+    period       (string, default="all") - "weekly", "monthly", "yearly", "all"
+    sort_by      (string, default="-load_count")
+    status       (string)    - filter loads by status: "available", "booked", "in_transit", "delivered", "cancelled"
+    direction    (string, default="all") - "inbound" (loads coming TO this state), "outbound" (loads FROM this state), "all"
+    origin       (string)    - exact state abbreviation filter on route origin, e.g. "IL"
+    destination  (string)    - exact state abbreviation filter on route destination, e.g. "NY"
+
+  Valid sort_by: load_count, -load_count, total_payout, -total_payout,
+                 most_expensive, -most_expensive, route_id, -route_id, latest_load, -latest_load
+
+  Examples:
+    GET /admin-api/states/TX                              -> all routes touching TX
+    GET /admin-api/states/TX?direction=outbound           -> only TX->somewhere
+    GET /admin-api/states/TX?destination=NY               -> only routes where destination is NY (TX-NY)
+    GET /admin-api/states/TX?direction=outbound&destination=NY  -> TX->NY only
+    GET /admin-api/states/TX?origin=IL                    -> only routes where origin is IL (IL-TX)
+    GET /admin-api/states/TX?period=weekly&status=available     -> only available loads from last 7 days
+
+  Response:
+    {
+      "data": {
+        "state": {"abbreviation": "TX", "name": "Texas"},
+        "period": "All time",
+        "direction": "all",
+        "overview": {
+          "total_loads": 28190,
+          "total_routes": 98,
+          "total_payout": "116348326.08",
+          "most_expensive": "11280",
+          "cheapest": "246.13",
+          "total_miles": "42367462",
+          "status_breakdown": {
+            "available": 11049,
+            "booked": 5760,
+            "in_transit": 4273,
+            "delivered": 5700,
+            "cancelled": 1408
+          }
+        },
+        "most_expensive_load": { ...full load object... },
+        "routes": [
+          {
+            "route_id": "IL-TX",
+            "origin_state": {"abbreviation": "IL", "name": "Illinois"},
+            "destination_state": {"abbreviation": "TX", "name": "Texas"},
+            "load_count": 2268,
+            "total_payout": "9461026.26",
+            "most_expensive": "11207.31",
+            "cheapest": "200.50",
+            "total_miles": "3400000.0",
+            "latest_load": "2026-03-09T08:58:00+00:00"
+          }
+        ],
+        "pagination": {"page": 1, "per_page": 20, "total": 98, "pages": 5}
+      }
+    }
+
+GET /admin-api/states/<abbreviation>/analytics
+  Time-series analytics for a state (all loads touching that state).
+  Permission: analytics.view
+  Query params:
+    period  (string, default="weekly") - "weekly", "monthly", "yearly"
+  Example: GET /admin-api/states/TX/analytics?period=monthly
+  Response:
+    {
+      "data": {
+        "state": {"abbreviation": "TX", "name": "Texas"},
+        "period_type": "monthly",
+        "overview": {
+          "total_loads": 28190,
+          "total_payout": "116348326.08",
+          "most_expensive": "11280",
+          "cheapest": "246.13",
+          "total_miles": "42367462",
+          "unique_routes": 98,
+          "status_breakdown": {
+            "available": 11049,
+            "booked": 5760,
+            "in_transit": 4273,
+            "delivered": 5700,
+            "cancelled": 1408
+          }
+        },
+        "top_routes": [
+          {"route_id": "IL-TX", "load_count": 2268, "total_payout": "9461026.26", "most_expensive": "11207.31"}
+        ],
+        "periods": [
+          {
+            "period": "2026-03-01",
+            "total_loads": 28190,
+            "total_payout": "116348326.08",
+            "most_expensive": "11280",
+            "cheapest": "246.13",
+            "total_miles": "42367462",
+            "unique_routes": 98,
+            "status_breakdown": {"available": 11049, "booked": 5760, "in_transit": 4273, "delivered": 5700, "cancelled": 1408}
+          }
+        ]
+      }
+    }
+
+
+────────────────────────────────────────────────────────────────────────────────
+ADMIN: ANALYTICS
+────────────────────────────────────────────────────────────────────────────────
+
+GET /admin-api/analytics/overview
+  Dashboard overview. Can be scoped to a specific state.
+  Permission: analytics.view
+  Query params:
+    state  (string, optional) - US state abbreviation to scope the overview, e.g. "TX"
+  Example: GET /admin-api/analytics/overview?state=TX
+  Response:
+    {
+      "data": {
+        "total_loads": 142500,
+        "total_unique_routes": 2450,
+        "most_expensive_load": { ...full load object... },
+        "status_breakdown": {
+          "available": 56613,
+          "booked": 28618,
+          "in_transit": 21315,
+          "delivered": 28647,
+          "cancelled": 7307
+        },
+        "this_week": {
+          "loads": 142500,
+          "change_vs_last_week": "0",
+          "total_payout": "589000000.00",
+          "most_expensive": "11327.08",
+          "cheapest": "200.50",
+          "total_miles": "213000000.0"
+        },
+        "last_week": {"loads": 0},
+        "top_routes": [
+          {"load_id": "IL-TX", "count": 2268, "total_payout": "9461026.26", "most_expensive": "11207.31", "cheapest": "201.00", "total_miles": "3400000.0", "last_seen": "2026-03-09T08:58:00+00:00"}
+        ],
+        "top_routes_this_week": [ ...same format, top 5... ],
+        "state": "TX"   // only present when state param is used
+      }
+    }
+
+GET /admin-api/analytics/loads/frequency
+  Shows how often the same load_id (route) appears. Useful for finding repeat routes.
+  Permission: analytics.view
+  Query params:
+    period     (string, default="7d") - "24h", "7d", "14d", "30d", "90d", "all"
+    page       (int, default=1)
+    per_page   (int, default=20, max=100)
+    min_count  (int, default=2) - minimum number of occurrences to include
+    sort_by    (string, default="-count")
+
+  Valid sort_by: count, -count, load_id, -load_id, total_payout, -total_payout, last_seen, -last_seen
+
+  Response:
+    {
+      "data": {
+        "period": "Last 7 days",
+        "loads": [
+          {
+            "load_id": "IL-TX",
+            "count": 2268,
+            "first_seen": "2026-03-09T08:51:00+00:00",
+            "last_seen": "2026-03-09T08:58:00+00:00",
+            "total_payout": "9461026.26",
+            "most_expensive": "11207.31",
+            "cheapest": "201.00",
+            "total_miles": "3400000.0",
+            "status_breakdown": {"available": 900, "booked": 450, ...}
+          }
+        ],
+        "pagination": {"page": 1, "per_page": 20, "total": 2450, "pages": 123}
+      }
+    }
+
+GET /admin-api/analytics/loads/routes
+  Route frequency - most common routes by load count.
+  Permission: analytics.view
+  Query params:
+    period    (string, default="7d") - "24h", "7d", "14d", "30d", "90d", "all"
+    page      (int, default=1)
+    per_page  (int, default=20, max=100)
+  Response:
+    {
+      "data": {
+        "period": "Last 7 days",
+        "routes": [
+          {"load_id": "IL-TX", "count": 2268, "total_payout": "9461026.26", "most_expensive": "11207.31", "cheapest": "201.00", "total_miles": "3400000.0"}
+        ],
+        "pagination": {"page": 1, "per_page": 20, "total": 2450, "pages": 123}
+      }
+    }
+
+GET /admin-api/analytics/loads/trends
+  Time-series load data grouped by day or week.
+  Permission: analytics.view
+  Query params:
+    period    (string, default="30d") - "24h", "7d", "14d", "30d", "90d", "all"
+    group_by  (string, default="day") - "day" or "week"
+  Response:
+    {
+      "data": {
+        "period": "Last 30 days",
+        "group_by": "day",
+        "data": [
+          {
+            "date": "2026-03-09",
+            "count": 142500,
+            "total_payout": "589000000.00",
+            "most_expensive": "11327.08",
+            "cheapest": "200.50",
+            "total_miles": "213000000.0",
+            "unique_routes": 2450
+          }
+        ],
+        "summary": {
+          "total_loads": 142500,
+          "days_covered": 1
+        }
+      }
+    }
+
+GET /admin-api/analytics/loads/compare
+  Compare two time periods side by side.
+  Permission: analytics.compare
+  Query params:
+    period_a  (string, default="7d") - "24h", "7d", "14d", "30d", "90d", "all"
+    period_b  (string, default="14d")
+  Response:
+    {
+      "data": {
+        "period_a": {
+          "label": "Last 7 days",
+          "stats": {
+            "total_loads": 142500,
+            "unique_routes": 2450,
+            "total_payout": "589000000.00",
+            "most_expensive": "11327.08",
+            "cheapest": "200.50",
+            "total_miles": "213000000.0",
+            "status_breakdown": {"available": 56613, ...},
+            "top_routes": [{"load_id": "IL-TX", "count": 2268, ...}]
+          }
+        },
+        "period_b": {
+          "label": "Last 14 days",
+          "stats": { ...same format... }
+        },
+        "changes": {
+          "total_loads": {"change": 142500, "change_pct": "100.0"},
+          "unique_routes": {"change": 2450, "change_pct": "100.0"}
+        }
+      }
+    }
+
+
+────────────────────────────────────────────────────────────────────────────────
+ADMIN: USERS
+────────────────────────────────────────────────────────────────────────────────
+
+GET /admin-api/users
+  List users with filtering and pagination.
+  Permission: users.view
+  Query params:
+    page       (int, default=1)
+    per_page   (int, default=20, max=100)
+    search     (string)  - searches: email, first_name, last_name, phone
+    is_active  (bool)    - "true" or "false"
+    role       (string)  - filter by role slug, e.g. "admin"
+    sort_by    (string, default="-created_at")
+
+  Valid sort_by: created_at, -created_at, email, -email, first_name, -first_name,
+                 last_login_at, -last_login_at, id, -id
+
+  Response:
+    {
+      "data": {
+        "users": [
+          {
+            "id": 1,
+            "email": "john@example.com",
+            "first_name": "John",
+            "last_name": "Doe",
+            "full_name": "John Doe",
+            "phone": "",
+            "is_active": true,
+            "roles": ["admin"],
+            "last_login": "2026-03-16T06:00:00+00:00",
+            "created_at": "2026-03-09T08:00:00+00:00"
+          }
+        ],
+        "pagination": {"page": 1, "per_page": 20, "total": 10, "pages": 1}
+      }
+    }
+
+GET /admin-api/users/stats
+  User statistics dashboard.
+  Permission: users.view
+  Response:
+    {
+      "data": {
+        "total_users": 10,
+        "active_users": 8,
+        "inactive_users": 2,
+        "new_last_24h": 0,
+        "new_last_7d": 10,
+        "new_last_30d": 10,
+        "active_sessions": 3,
+        "logged_in_last_24h": 1,
+        "roles_breakdown": [
+          {"name": "Admin", "slug": "admin", "user_count": 2},
+          {"name": "Dispatcher", "slug": "dispatcher", "user_count": 5}
+        ]
+      }
+    }
+
+POST /admin-api/users/create
+  Create a new user.
+  Permission: users.create
+  Body:
+    email       (string, required, valid email, unique)
+    first_name  (string, required, max 100 chars)
+    last_name   (string, required, max 100 chars)
+    password    (string, required, 8+ chars, mixed case, number, special char)
+    phone       (string, optional)
+    role_id     (int, optional) - assign a specific role on creation
+  Response: 201 with user detail object
+
+GET /admin-api/users/<id>
+  Get user detail with roles and permissions.
+  Permission: users.view
+  Response:
+    {
+      "data": {
+        "id": 1,
+        "email": "john@example.com",
+        "first_name": "John",
+        "last_name": "Doe",
+        "full_name": "John Doe",
+        "phone": "",
+        "is_active": true,
+        "email_verified": false,
+        "last_login": "2026-03-16T06:00:00+00:00",
+        "last_login_ip": "127.0.0.1",
+        "created_at": "2026-03-09T08:00:00+00:00",
+        "updated_at": "2026-03-16T06:00:00+00:00",
+        "roles": [{"id": 1, "name": "Admin", "slug": "admin"}],
+        "permissions": ["users.view", "users.create", "loads.view", ...]
+      }
+    }
+
+PUT /admin-api/users/<id>/update
+  Update user fields.
+  Permission: users.update
+  Body (all optional, at least one required):
+    email       (string, valid email, must be unique)
+    first_name  (string, max 100 chars)
+    last_name   (string, max 100 chars)
+    phone       (string)
+    is_active   (bool)
+
+POST /admin-api/users/<id>/delete
+  Deactivate user (soft delete).
+  Permission: users.delete
+  Body:
+    force  (bool) - required if deleting own account
+
+POST /admin-api/users/<id>/toggle-active
+  Toggle user active/inactive status.
+  Permission: users.update
+  Body:
+    force  (bool) - required if toggling own account
+  Response: {"data": {"id": 1, "is_active": false}}
+
+POST /admin-api/users/<id>/change-password
+  Admin change user password.
+  Permission: users.update
+  Body:
+    new_password  (string, required, password strength validated)
+    force         (bool) - required if changing own password
+  Side effect: terminates all user sessions
+
+POST /admin-api/users/<id>/force-logout
+  Force logout a user (terminate all sessions).
+  Permission: users.update
+  Body:
+    force  (bool) - required if forcing logout on self
+  Response: {"data": {"sessions_terminated": 3}}
+
+GET /admin-api/users/<id>/sessions
+  List user's active sessions.
+  Permission: users.view
+  Response:
+    {
+      "data": {
+        "sessions": [
+          {
+            "key": "7a7b3b3ac68d...",
+            "device": "Chrome",
+            "ip_address": "127.0.0.1",
+            "last_activity_at": "2026-03-16T06:00:00+00:00",
+            "created_at": "2026-03-15T10:00:00+00:00",
+            "expires_at": "2026-03-18T10:00:00+00:00"
+          }
+        ]
+      }
+    }
+
+POST /admin-api/users/<id>/roles
+  Assign a role to a user.
+  Permission: roles.update
+  Body:
+    role_id  (int, required)
+
+DELETE /admin-api/users/<id>/roles/remove
+  Remove a role from a user.
+  Permission: roles.update
+  Body:
+    role_id  (int, required)
+
+
+────────────────────────────────────────────────────────────────────────────────
+ADMIN: ROLES & PERMISSIONS
+────────────────────────────────────────────────────────────────────────────────
+
+GET /admin-api/roles
+  List all roles with user count and permission count.
+  Permission: roles.view
+  Response:
+    {
+      "data": {
+        "roles": [
+          {
+            "id": 1,
+            "name": "Admin",
+            "slug": "admin",
+            "description": "Full access",
+            "is_default": true,
+            "user_count": 2,
+            "permission_count": 21,
+            "created_at": "2026-03-09T08:00:00+00:00",
+            "updated_at": "2026-03-09T08:00:00+00:00"
+          }
+        ]
+      }
+    }
+
+GET /admin-api/roles/stats
+  Role statistics.
+  Permission: roles.view
+  Response:
+    {
+      "data": {
+        "total_roles": 4,
+        "total_permissions": 21,
+        "roles": [
+          {"id": 1, "name": "Admin", "slug": "admin", "user_count": 2, "permission_count": 21}
+        ]
+      }
+    }
+
+POST /admin-api/roles/create
+  Create a new role.
+  Permission: roles.create
+  Body:
+    name         (string, required, max 50 chars, unique)
+    slug         (string, required, max 50 chars, unique, auto-lowercased)
+    description  (string, optional)
+  Response: 201 with role object
+
+GET /admin-api/roles/<id>
+  Get role detail with permissions and first 50 users.
+  Permission: roles.view
+  Response:
+    {
+      "data": {
+        "id": 1,
+        "name": "Admin",
+        "slug": "admin",
+        "description": "Full access",
+        "is_default": true,
+        "created_at": "...",
+        "updated_at": "...",
+        "permissions": [
+          {"id": 1, "codename": "users.view", "name": "View Users", "module": "users"}
+        ],
+        "users": [
+          {"id": 1, "email": "john@example.com", "full_name": "John Doe"}
+        ]
+      }
+    }
+
+PUT /admin-api/roles/<id>/update
+  Update a role.
+  Permission: roles.update
+  Body (at least one required):
+    name         (string, unique)
+    slug         (string, unique, auto-lowercased)
+    description  (string)
+
+DELETE /admin-api/roles/<id>/delete
+  Delete a role. Cannot delete default roles or roles with assigned users.
+  Permission: roles.delete
+
+POST /admin-api/roles/<id>/permissions
+  Assign a single permission to a role.
+  Permission: roles.update
+  Body:
+    permission_id  (int, required)
+
+DELETE /admin-api/roles/<id>/permissions/remove
+  Remove a permission from a role.
+  Permission: roles.update
+  Body:
+    permission_id  (int, required)
+
+POST /admin-api/roles/<id>/permissions/bulk
+  Bulk assign permissions to a role.
+  Permission: roles.update
+  Body:
+    permission_ids  (array of ints, required, non-empty)
+  Response: {"data": {"assigned": 5, "skipped": 2}}
+
+GET /admin-api/permissions
+  List all permissions, flat and grouped by module.
+  Permission: roles.view
+  Response:
+    {
+      "data": {
+        "permissions": [
+          {"id": 1, "codename": "users.view", "name": "View Users", "module": "users"}
+        ],
+        "grouped": {
+          "users": [
+            {"id": 1, "codename": "users.view", "name": "View Users"}
+          ],
+          "loads": [ ... ],
+          "facilities": [ ... ],
+          "roles": [ ... ],
+          "reports": [ ... ],
+          "analytics": [ ... ]
+        },
+        "total": 21
+      }
+    }
+
+
+────────────────────────────────────────────────────────────────────────────────
+ADMIN: FACILITIES
+────────────────────────────────────────────────────────────────────────────────
+
+GET /admin-api/facilities
+  List facilities (same filters as public endpoint).
+  Permission: facilities.view
+  Query params: page, per_page, facility_type, state, city, search
+
+GET /admin-api/facilities/stats
+  Facility statistics.
+  Permission: facilities.view
+  Response:
+    {
+      "data": {
+        "total_facilities": 500,
+        "type_breakdown": {"warehouse": 200, "distribution_center": 150, ...},
+        "top_states": [{"state": "TX", "count": 50}, ...],
+        "top_cities": [{"city": "Dallas", "state": "TX", "count": 20}, ...]
+      }
+    }
+
+POST /admin-api/facilities/create
+  Create a facility.
+  Permission: facilities.create
+  Body:
+    code           (string, required, max 50 chars, unique)
+    name           (string, optional)
+    address        (string, optional)
+    city           (string, optional)
+    state          (string, optional)
+    zip_code       (string, optional)
+    facility_type  (string, default="warehouse")
+  Response: 201
+
+GET /admin-api/facilities/<id>
+  Get facility detail.
+  Permission: facilities.view
+
+PUT /admin-api/facilities/<id>/update
+  Update a facility.
+  Permission: facilities.update
+  Body: any field from create (at least one required)
+
+DELETE /admin-api/facilities/<id>/delete
+  Delete a facility. Cannot delete if referenced by any loads.
+  Permission: facilities.delete
+
+
+────────────────────────────────────────────────────────────────────────────────
+ADMIN: ACTIVITY LOGS
+────────────────────────────────────────────────────────────────────────────────
+
+GET /admin-api/activity-logs
+  List activity logs with filtering.
+  Permission: reports.view
+  Query params:
+    page       (int, default=1)
+    per_page   (int, default=20, max=100)
+    user_id    (int)     - filter by user
+    action     (string)  - filter by action type
+    load_id    (int)     - filter by load
+    date_from  (string)  - ISO date
+    date_to    (string)  - ISO date
+    search     (string)  - searches: action, user email/name, ip_address
+  Response:
+    {
+      "data": {
+        "logs": [
+          {
+            "id": 1,
+            "user": {"id": 1, "email": "john@example.com", "full_name": "John Doe"},
+            "load": {"id": 123, "load_id": "TX-NY"} or null,
+            "action": "load.created",
+            "details": "Created load TX-NY",
+            "ip_address": "127.0.0.1",
+            "created_at": "2026-03-09T08:51:00+00:00"
+          }
+        ],
+        "pagination": {"page": 1, "per_page": 20, "total": 500, "pages": 25}
+      }
+    }
+
+GET /admin-api/activity-logs/<id>
+  Get single activity log detail.
+  Permission: reports.view
+
+
+================================================================================
+PERMISSION CODENAMES REFERENCE
+================================================================================
+
+Module: users
+  users.view    - View users
+  users.create  - Create users
+  users.update  - Update users
+  users.delete  - Delete users
+
+Module: loads
+  loads.view    - View loads
+  loads.create  - Create loads
+  loads.update  - Update loads / change status / cancel
+  loads.assign  - Assign drivers to loads
+
+Module: facilities
+  facilities.view    - View facilities
+  facilities.create  - Create facilities
+  facilities.update  - Update facilities
+  facilities.delete  - Delete facilities
+
+Module: roles
+  roles.view    - View roles and permissions
+  roles.create  - Create roles
+  roles.update  - Update roles, assign/remove permissions and user roles
+  roles.delete  - Delete roles
+
+Module: reports
+  reports.view  - View activity logs
+
+Module: analytics
+  analytics.view     - View analytics, states, trends
+  analytics.compare  - Compare periods
+
+
+================================================================================
+VALID ENUM VALUES REFERENCE
+================================================================================
+
+Load status:        available, booked, in_transit, delivered, cancelled
+Driver type:        solo, team
+Load type:          drop, live, hook
+Direction:          one_way, round_trip
+Period (analytics): 24h, 7d, 14d, 30d, 90d, all
+Period (states):    weekly, monthly, yearly, all
+Period (route analytics): weekly, monthly, yearly
+Group by (trends):  day, week
+State direction:    inbound, outbound, all
+
+US States: AL, AK, AZ, AR, CA, CO, CT, DE, FL, GA, HI, IA, ID, IL, IN, KS,
+           KY, LA, MA, MD, ME, MI, MN, MO, MS, MT, NC, ND, NE, NH, NJ, NM,
+           NV, NY, OH, OK, OR, PA, RI, SC, SD, TN, TX, UT, VA, VT, WA, WI,
+           WV, WY
+
+
+================================================================================
+NOTES FOR FRONTEND
+================================================================================
+
+1. All monetary values are returned as strings (to preserve decimal precision).
+   Parse them to numbers on the frontend.
+
+2. All dates are ISO 8601 format with timezone (e.g. "2026-03-09T08:51:33.455799+00:00").
+
+3. Pagination is consistent across all list endpoints:
+   {"page": 1, "per_page": 20, "total": 142500, "pages": 7125}
+
+4. The "origin" and "destination" params on /api/loads do a BROAD search
+   across facility, city, state, address, zip. Use "origin_state" and
+   "destination_state" for EXACT state matching (e.g. origin_state=TX).
+
+5. When group=true on /api/loads, pagination counts ROUTES not individual loads.
+   Each route contains all its loads nested inside.
+
+6. Cache TTLs: most endpoints cache for 2 minutes (120s), some for 5 minutes (300s).
+   Data may be slightly stale after writes.
+
+7. The most_expensive_load field on state endpoints returns a full load object
+   (same format as the loads list), not just a number.
+
+8. Rate limiting on login: after 5 failed attempts from the same IP within 15 minutes,
+   returns 429 with a "try again later" message.
+
+9. Password requirements: minimum 8 characters, at least one uppercase, one lowercase,
+   one number, and one special character.
+
+10. Session keys are SHA256 hashes. Sessions expire after 72 hours.
+    Last activity is tracked on every authenticated request.
