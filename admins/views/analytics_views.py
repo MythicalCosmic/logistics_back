@@ -15,7 +15,8 @@ def _json(result_tuple):
 @require_GET
 @require_permission("analytics.view")
 def overview(request):
-    return _json(LoadAnalyticsService.overview())
+    state = request.GET.get("state", "").strip() or None
+    return _json(LoadAnalyticsService.overview(state=state))
 
 
 @csrf_exempt

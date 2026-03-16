@@ -307,6 +307,8 @@ def list_loads_request(request) -> tuple:
         "status": request.GET.get("status", "").strip(),
         "origin": request.GET.get("origin", "").strip(),
         "destination": request.GET.get("destination", "").strip(),
+        "origin_state": request.GET.get("origin_state", "").strip(),
+        "destination_state": request.GET.get("destination_state", "").strip(),
         "search": request.GET.get("search", "").strip(),
         "sort_by": request.GET.get("sort_by", "-created_at").strip(),
         "route_id": request.GET.get("route_id", "").strip(),

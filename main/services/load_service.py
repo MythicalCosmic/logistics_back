@@ -38,6 +38,7 @@ class LoadService:
 
     @classmethod
     def _build_load_qs(cls, status="", origin="", destination="",
+                       origin_state="", destination_state="",
                        driver_id=None, search="", route_id="",
                        min_payout=None, max_payout=None,
                        date_from=None, date_to=None, week=None):
@@ -48,6 +49,10 @@ class LoadService:
             qs = qs.filter(status=status)
         if route_id:
             qs = qs.filter(load_id=route_id.upper())
+        if origin_state:
+            qs = qs.filter(origin_state__iexact=origin_state.strip())
+        if destination_state:
+            qs = qs.filter(destination_state__iexact=destination_state.strip())
         if origin:
             qs = qs.filter(
                 Q(origin_facility__icontains=origin) |

@@ -5,7 +5,7 @@ from django.db.models.functions import TruncDate, TruncWeek
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 
-from base.models import Load
+from base.models import Load, State
 from base.services.base_service import ServiceResponse, CacheService
 
 
@@ -206,16 +206,12 @@ class LoadAnalyticsService:
                 "unique_routes": row["unique_routes"],
             })
 
-        total_loads = sum(i["count"] for i in items)
-        total_routes = sum(i["unique_routes"] for i in items)
-
         result = {
             "period": label,
             "group_by": group_by,
             "data": items,
             "summary": {
-                "total_loads": total_loads,
-                "total_unique_routes": total_routes,
+                "total_loads": sum(i["count"] for i in items),
                 "days_covered": len(items),
             },
         }
@@ -319,23 +315,38 @@ class LoadAnalyticsService:
     # ── overview dashboard ──────────────────────────────────────────
 
     @classmethod
-    def overview(cls) -> tuple:
-        cache_key = "analytics:overview"
+    def overview(cls, state=None) -> tuple:
+        cache_key = f"analytics:overview:{state or 'all'}"
         cached = CacheService.get(cache_key)
         if cached:
             return ServiceResponse.success("Analytics overview", data=cached)
 
         now = timezone.now()
 
-        total = Load.objects.count()
-        total_unique_routes = Load.objects.exclude(load_id="").values("load_id").distinct().count()
+        # base queryset — optionally scoped to a state
+        base_qs = Load.objects.all()
+        if state:
+            state = state.upper()
+            try:
+                state_obj = State.objects.get(abbreviation=state)
+            except State.DoesNotExist:
+                return ServiceResponse.not_found("State not found")
+            base_qs = base_qs.filter(
+                Q(route__origin_state=state_obj) |
+                Q(route__destination_state=state_obj)
+            )
+
+        total = base_qs.count()
+        total_unique_routes = (
+            base_qs.exclude(load_id="").values("load_id").distinct().count()
+        )
 
         # this week vs last week
         week_start = now - timedelta(days=7)
         prev_week_start = now - timedelta(days=14)
 
-        this_week_qs = Load.objects.filter(created_at__gte=week_start)
-        last_week_qs = Load.objects.filter(
+        this_week_qs = base_qs.filter(created_at__gte=week_start)
+        last_week_qs = base_qs.filter(
             created_at__gte=prev_week_start, created_at__lt=week_start
         )
 
@@ -349,9 +360,28 @@ class LoadAnalyticsService:
             total_miles=Sum("total_miles"),
         )
 
-        # top 10 routes (all time) by load count
+        # status breakdown
+        status_counts = dict(
+            base_qs.values_list("status")
+            .annotate(c=Count("id"))
+            .values_list("status", "c")
+        )
+
+        # most expensive load
+        from main.services.load_service import LoadService
+
+        most_expensive_load = None
+        top_load = (
+            base_qs.select_related("registered_by", "assigned_driver", "route")
+            .order_by("-payout")
+            .first()
+        )
+        if top_load:
+            most_expensive_load = LoadService._serialize_load_list(top_load)
+
+        # top 10 routes by load count
         top_routes = list(
-            Load.objects.exclude(load_id="")
+            base_qs.exclude(load_id="")
             .values("load_id")
             .annotate(
                 count=Count("id"),
@@ -389,11 +419,21 @@ class LoadAnalyticsService:
 
         week_change = 0
         if last_week_count > 0:
-            week_change = round((this_week_count - last_week_count) / last_week_count * 100, 1)
+            week_change = round(
+                (this_week_count - last_week_count) / last_week_count * 100, 1
+            )
 
         data = {
             "total_loads": total,
             "total_unique_routes": total_unique_routes,
+            "most_expensive_load": most_expensive_load,
+            "status_breakdown": {
+                "available": status_counts.get("available", 0),
+                "booked": status_counts.get("booked", 0),
+                "in_transit": status_counts.get("in_transit", 0),
+                "delivered": status_counts.get("delivered", 0),
+                "cancelled": status_counts.get("cancelled", 0),
+            },
             "this_week": {
                 "loads": this_week_count,
                 "change_vs_last_week": str(week_change),
@@ -408,6 +448,9 @@ class LoadAnalyticsService:
             "top_routes": top_routes,
             "top_routes_this_week": top_routes_week,
         }
+
+        if state:
+            data["state"] = state
 
         CacheService.set(cache_key, data, cls.CACHE_TTL)
         return ServiceResponse.success("Analytics overview", data=data)
